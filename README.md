@@ -4,4 +4,4 @@
 
 - I'm a student at 42 Paris:
 
-[![jaeskim's 42 stats](https://badge42.herokuapp.com/api/stats/adelille)](https://github.com/JaeSeoKim/badge42)
+[![jaeskim's 42 stats](https://badge42.herokuapp.com/api/stats/adelille?darkmode=true)](https://github.com/JaeSeoKim/badge42)
