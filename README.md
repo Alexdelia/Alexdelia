@@ -25,6 +25,6 @@
 	<img src="https://komarev.com/ghpvc/?username=Alexdelia" alt="page views" />
 </p>
 <p align="center">
-	<img src="https://github-readme-stats.vercel.app/api?username=Alexdelia&show_icons=true&count_private=true" alt="Alexdelia" />
-	<img src="https://github-readme-stats-olive-nine.vercel.app/api/top-langs/?username=Alexdelia&layout=compact&cache_seconds=1800" alt="Alexdelia" />
+	<img src="https://github-readme-stats.vercel.app/api?username=Alexdelia&show_icons=true&count_private=true&theme=tokyonight" alt="Alexdelia" />
+	<img src="https://github-readme-stats-olive-nine.vercel.app/api/top-langs/?username=Alexdelia&layout=compact&cache_seconds=1800&theme=tokyonight" alt="Alexdelia" />
 </p>
