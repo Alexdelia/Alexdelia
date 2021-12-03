@@ -19,7 +19,7 @@
 	<img align="center" src="https://projecteuler.net/profile/Alexdelia.png" />
 </p>
 
-##
+## Github stats:
 
 <p align="center">
 	<img src="https://komarev.com/ghpvc/?username=Alexdelia" alt="page views" />
