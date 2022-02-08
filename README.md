@@ -13,7 +13,7 @@
 </p>
 
 
-## Project euler stats:
+## Project Euler stats:
 
 <p align="center">
 	<img align="center" src="https://projecteuler.net/profile/Alexdelia.png" />
