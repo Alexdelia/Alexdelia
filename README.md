@@ -27,9 +27,18 @@
 ## Github stats:
 
 <p align="center">
+	<img src="https://github.com/Alexdelia/Alexdelia/blob/main/metrics.plugin.isocalendar.fullyear.svg?raw=true" />
+</p>
+<p align="center">
 	<img src="https://komarev.com/ghpvc/?username=Alexdelia" alt="page views" />
 </p>
 <p align="center">
 	<img src="https://github-readme-stats.vercel.app/api?username=Alexdelia&show_icons=true&count_private=true&include_all_commits=true&theme=radical" alt="Alexdelia" />
 	<img src="https://github-readme-stats-olive-nine.vercel.app/api/top-langs/?username=Alexdelia&layout=compact&cache_seconds=1800&theme=radical&langs_count=10" alt="Alexdelia" />
 </p>
+
+<div align="center">
+	<details><summary>More</summary>
+		<img src="https://github.com/Alexdelia/Alexdelia/blob/main/metrics.plugin.achievements.svg?raw=true" />
+		<img src="https://github.com/Alexdelia/Alexdelia/blob/main/metrics.plugin.lines.svg?raw=true" />
+</div>
