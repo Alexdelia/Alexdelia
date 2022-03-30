@@ -12,12 +12,12 @@
 	</a>
 </p>
 
-<p align="center">
-	<a href="https://github.com/JaeSeoKim/badge42">
-		<img src="https://badge42.vercel.app/api/v2/stats/cl1dqb1ym001109mswwj0wv3x?cursusId=21}" alt="adelille's 42 stats" />
-	</a>
-</p>
+<div align="center">
 
+[![adelille's 42 stats](https://badge42.vercel.app/api/v2/stats/cl1dqb1ym001109mswwj0wv3x?cursusId=21)](https://github.com/JaeSeoKim/badge42)
+
+</div>
+	
 ## Project Euler stats:
 
 <p align="center">
