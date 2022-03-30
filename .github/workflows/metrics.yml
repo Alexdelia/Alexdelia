@@ -36,8 +36,16 @@ jobs:
           plugin_habits_days: 14
           plugin_habits_facts: yes
           plugin_habits_from: 200
-          plugin_isocalendar: yes
-          plugin_isocalendar_duration: full-year
           plugin_lines: yes
           plugin_projects: yes
           plugin_projects_limit: 4
+  full-year-calendar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: lowlighter/metrics@latest
+        with:
+          filename: metrics.plugin.isocalendar.fullyear.svg
+          token: ${{ secrets.METRICS_TOKEN }}
+          base: ""
+          plugin_isocalendar: yes
+          plugin_isocalendar_duration: full-year
