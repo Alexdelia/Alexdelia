@@ -11,12 +11,6 @@
 		<img src="https://badge42.vercel.app/api/v2/cl1dqb1ym001109mswwj0wv3x/stats?darkmode=true&cursusId=21&coalitionId=47" />
 	</a>
 </p>
-	
-## Project Euler stats:
-
-<p align="center">
-	<img align="center" src="https://projecteuler.net/profile/Alexdelia.png" />
-</p>
 
 ## Github stats:
 
@@ -83,6 +77,13 @@
 			</tr>
 </tr>
 </table>
+</div>
+
+	
+<div align="center">
+	<details><summary>Project Euler</summary>
+		<img align="center" src="https://projecteuler.net/profile/Alexdelia.png" />
+	</details>
 </div>
 
 <div align="center">
