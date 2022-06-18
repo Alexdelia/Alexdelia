@@ -66,6 +66,22 @@
 				</th>
 			</tr>
 </tr>
+			<tr>
+				<th colspan="2" align="center">
+					<h3>
+						<img alt="nestJS" width="100" src="https://docs.nestjs.com/assets/logo-small.svg" </img>
+						<img alt="TypeScript" width="100" src="https://upload.wikimedia.org/wikipedia/commons/4/4c/Typescript_logo_2020.svg" </img>
+						<img alt="Angular" width="110" src="https://upload.wikimedia.org/wikipedia/commons/c/cf/Angular_full_color_logo.svg" </img>
+						<img alt="PostgreSQL" width="100" src="https://upload.wikimedia.org/wikipedia/commons/2/29/Postgresql_elephant.svg" </img>
+						<img alt="nestJS" width="100" src="https://www.docker.com/wp-content/uploads/2022/03/vertical-logo-monochromatic.png" </img>
+					</h3>
+				</th>
+			<tr>
+				<th colspan="2" align="center">
+					to come ...
+				</th>
+			</tr>
+</tr>
 </table>
 </div>
 
