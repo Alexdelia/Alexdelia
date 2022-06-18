@@ -31,6 +31,45 @@
 </p>
 
 <div align="center">
+	<details><summary>Certification</summary>
+		<table>
+			<tr>
+				<th colspan="2" align="center">
+					<h3><img alt="C" width="100" src="https://upload.wikimedia.org/wikipedia/commons/1/18/C_Programming_Language.svg" </img></h3>
+				</th>
+			<tr>
+				<th align="center"><img alt="CodinGame" height="40" src="https://github.com/Alexdelia/Alexdelia/blob/main/ressources/CodinGame_logo.png"</img></th>
+				<th align="center"><img alt="SoloLearn" height="50" src="https://upload.wikimedia.org/wikipedia/commons/5/53/SoloLearn_logo.svg"</img></th>
+			</tr>
+			<tr>
+				<td align="center"><img alt="" width="400" src="https://github.com/Alexdelia/Alexdelia/blob/main/certification/CodinGame_c.png"></img></td>
+				<td align="center"><img alt="" width="400" src="https://github.com/Alexdelia/Alexdelia/blob/main/certification/SoloLearn_c.png"></img></td>
+			</tr>
+</tr>
+			<tr>
+				<th colspan="2" align="center">
+					<h3><img alt="CPP" width="100" src="https://github.com/isocpp/logos/blob/master/cpp_logo.svg" </img></h3>
+				</th>
+			<tr>
+				<th colspan="2" align="center">
+					to come ...
+				</th>
+			</tr>
+</tr>
+			<tr>
+				<th colspan="2" align="center">
+					<h3><img alt="python" width="100" src="https://upload.wikimedia.org/wikipedia/commons/c/c3/Python-logo-notext.svg" </img></h3>
+				</th>
+			<tr>
+				<th colspan="2" align="center">
+					to come ...
+				</th>
+			</tr>
+</tr>
+</table>
+</div>
+
+<div align="center">
 	<details><summary>More</summary>
 		<p align="center">
 			<img src="https://github-readme-stats.vercel.app/api?username=Alexdelia&show_icons=true&count_private=true&include_all_commits=true&theme=radical&hide_border=true" alt="Alexdelia" />
