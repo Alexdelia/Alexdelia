@@ -45,9 +45,10 @@
 					<h3><img alt="CPP" width="100" src="https://github.com/isocpp/logos/blob/master/cpp_logo.svg" </img></h3>
 				</th>
 			<tr>
-				<th colspan="2" align="center">
-					<td align="center"><img alt="" width="400" src="https://github.com/Alexdelia/Alexdelia/blob/main/certification/SoloLearn_cpp.png"></img></td>
-				</th>
+					<th colspan="2" align="center"><img alt="SoloLearn" height="50" src="https://upload.wikimedia.org/wikipedia/commons/5/53/SoloLearn_logo.svg"</img></th>
+			</tr>
+			<tr>
+					<td colspan="2" align="center"><img alt="" width="400" src="https://github.com/Alexdelia/Alexdelia/blob/main/certification/SoloLearn_cpp.png"></img></td>
 			</tr>
 </tr>
 			<tr>
