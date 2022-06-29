@@ -46,7 +46,7 @@
 				</th>
 			<tr>
 				<th colspan="2" align="center">
-					to come ...
+					<td align="center"><img alt="" width="400" src="https://github.com/Alexdelia/Alexdelia/blob/main/certification/SoloLearn_cpp.png"></img></td>
 				</th>
 			</tr>
 </tr>
