@@ -52,10 +52,9 @@
 						<a href=https://github.com/Alexdelia/42-Rush-Libunit target="_blank"><img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Rush-Libunit&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-Rush-Libunit" /></a>
 						<a href=https://github.com/Alexdelia/42-Rush-AlCu target="_blank"><img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Rush-AlCu&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-Rush-AlCu" /></a>
 						<a href=https://github.com/Alexdelia/42-Rush-Wong_kar_Wai target="_blank"><img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Rush-Wong_kar_Wai&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-Rush-Wong_kar_Wai" /></a>
-						<a href=https://github.com/Alexdelia/42-Rush-Connect4 target="_blank">42-Rush-Connect4 (solver)</a>
-						<!---<a href=https://github.com/Alexdelia/42-Rush-Connect4 target="_blank"><img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Rush-Connect4 &layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-Rush-Connect4" /></a>-->
+						<a href=https://github.com/Alexdelia/42-Rush-Connect4 target="_blank"><img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Rush-Connect4&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-Rush-Connect4" /></a>
 					</details>
-					<details open><summary>Visual</summary>
+					<details><summary>Visual</summary>
 						<a href=https://github.com/Alexdelia/42-fract-ol target="_blank"><img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-fract-ol&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-fract-ol" /></a>
 						<a href=https://github.com/Alexdelia/42-miniRT target="_blank"><img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-miniRT&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-miniRT" /></a>
 					</details>
@@ -82,6 +81,21 @@
 			</tr>
 			<tr>
 					<td colspan="2" align="center"><img alt="" width="400" src="https://github.com/Alexdelia/Alexdelia/blob/main/certification/SoloLearn_cpp.png"></img></td>
+			</tr>
+			<tr>
+				<td colspan="2" align="center"><details open><summary>Projects</summary>
+					<details><summary>Basics</summary>
+						<a href=https://github.com/Alexdelia/42-CPP-Module target="_blank"><img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-CPP-Module&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-CPP-Module" /></a>
+						<a href=https://github.com/Alexdelia/42-ft_containers target="_blank"><img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-ft_containers&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-ft_containers" /></a>
+					</details>
+					<details><summary>Rush</summary>
+						<a href=https://github.com/Alexdelia/42-Rush-Wordle target="_blank"><img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Rush-Wordle&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-Rush-Wordle" /></a>
+					</details>
+					<details><summary>IRC server</summary>
+						<a href=https://github.com/Alexdelia/42-ft_irc target="_blank"><img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-ft_irc&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-ft_irc" /></a>
+					</details>
+				</td>
+				</details>
 			</tr>
 </tr>
 			<tr>
