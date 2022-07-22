@@ -1,8 +1,8 @@
 # Hi
+
 <p align="center">
 	<img align="center" src="https://github.com/Alexdelia/Alexdelia/blob/main/pikacute.png?raw=true" />
 </p>
-
 
 ## I'm a student at 42 Paris:
 
@@ -127,7 +127,6 @@
 </table>
 </div>
 
-	
 <div align="center">
 	<details><summary>Project Euler</summary>
 		<img align="center" src="https://projecteuler.net/profile/Alexdelia.png" />
