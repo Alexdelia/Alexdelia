@@ -111,17 +111,18 @@
 			<tr>
 				<th colspan="2" align="center">
 					<h3>
-						<a href="http://nestjs.com/" target="blank"><img alt="nestJS" width="100" src="https://nestjs.com/img/logo-small.svg" </img></a>
 						<img alt="TypeScript" width="100" src="https://upload.wikimedia.org/wikipedia/commons/4/4c/Typescript_logo_2020.svg" </img>
-						<img alt="Angular" width="110" src="https://upload.wikimedia.org/wikipedia/commons/c/cf/Angular_full_color_logo.svg" </img>
+						<img alt="CSS" width="110" src="https://upload.wikimedia.org/wikipedia/commons/6/62/CSS3_logo.svg"</img>
+						<a href="https://reactjs.org/" target="blank"><img alt="React" width="110" src="https://upload.wikimedia.org/wikipedia/commons/a/a7/React-icon.svg" </img></a>
+						<a href="http://nestjs.com/" target="blank"><img alt="nestJS" width="100" src="https://nestjs.com/img/logo-small.svg" </img></a>
 						<img alt="PostgreSQL" width="100" src="https://upload.wikimedia.org/wikipedia/commons/2/29/Postgresql_elephant.svg" </img>
-						<img alt="nestJS" width="100" src="https://www.docker.com/wp-content/uploads/2022/03/vertical-logo-monochromatic.png" </img>
+						<img alt="Docker" width="100" src="https://www.docker.com/wp-content/uploads/2022/03/vertical-logo-monochromatic.png" </img>
 					</h3>
 				</th>
-			<tr>
-				<th colspan="2" align="center">
-					to come ...
-				</th>
+<tr>
+				<td colspan="2" align="center"><details open><summary>Projects</summary>
+					<a href=https://github.com/h3l4s/ft_transcendence-42 target="_blank"><img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=h3l4s&repo=ft_transcendence-42&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42 ft_transcendence" /></a>
+				</td>
 			</tr>
 </tr>
 </table>
