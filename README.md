@@ -41,10 +41,10 @@
 				</tr>
 				<tr>
 					<td align="center">
-						<img alt="" width="400" src="https://github.com/Alexdelia/Alexdelia/blob/main/certification/CodinGame_c.png" />
+						<img alt="CodinGame c certification" width="400" src="https://github.com/Alexdelia/Alexdelia/blob/main/certification/CodinGame_c.png" />
 					</td>
 					<td align="center">
-						<img alt="" width="400" src="https://github.com/Alexdelia/Alexdelia/blob/main/certification/SoloLearn_c.png" />
+						<img alt="SoloLearn c certification" width="400" src="https://github.com/Alexdelia/Alexdelia/blob/main/certification/SoloLearn_c.png" />
 					</td>
 				</tr>
 				<tr>
@@ -125,7 +125,7 @@
 				</tr>
 				<tr>
 					<td colspan="2" align="center">
-						<img alt="" width="400" src="https://github.com/Alexdelia/Alexdelia/blob/main/certification/SoloLearn_cpp.png" />
+						<img alt="SoloLearn cpp certification" width="400" src="https://github.com/Alexdelia/Alexdelia/blob/main/certification/SoloLearn_cpp.png" />
 					</td>
 				</tr>
 				<tr>
@@ -159,42 +159,66 @@
 				</th>
 				<tr>
 					<th colspan="2" align="center">
-						to come ...
+						<img alt="SoloLearn" height="50" src="https://upload.wikimedia.org/wikipedia/commons/5/53/SoloLearn_logo.svg" />
 					</th>
 				</tr>
 				<tr>
 					<th colspan="2" align="center">
-						<h3>
-							<a href="https://www.typescriptlang.org/" target="blank">
-								<img alt="TypeScript" width="100" src="https://upload.wikimedia.org/wikipedia/commons/4/4c/Typescript_logo_2020.svg" />
-							</a>
-							<img alt="CSS" width="110" src="https://upload.wikimedia.org/wikipedia/commons/6/62/CSS3_logo.svg" />
-							<a href="https://reactjs.org/" target="blank">
-								<img alt="React" width="110" src="https://upload.wikimedia.org/wikipedia/commons/a/a7/React-icon.svg" />
-							</a>
-							<a href="http://nestjs.com/" target="blank">
-								<img alt="NestJS" width="100" src="https://nestjs.com/img/logo-small.svg" />
-							</a>
-							<a href="https://www.postgresql.org/" target="blank">
-								<img alt="PostgreSQL" width="100" src="https://upload.wikimedia.org/wikipedia/commons/2/29/Postgresql_elephant.svg" />
-							</a>
-							<a href="https://typeorm.io/" target="blank">
-								<img alt="TypeORM" width="100" src="https://avatars.githubusercontent.com/u/20165699?s=200&v=4" />
-							</a>
-							<a href="https://www.docker.com/" target="blank">
-								<img alt="Docker" width="100" src="https://www.docker.com/wp-content/uploads/2022/03/vertical-logo-monochromatic.png" />
-							</a>
-						</h3>
+						<img alt="SoloLearn python certification" width="400" src="https://github.com/Alexdelia/Alexdelia/blob/main/certification/SoloLearn_python.png" />
 					</th>
-					<tr>
-						<td colspan="2" align="center">
-							<details open><summary>Projects</summary>
-								<a href=https://github.com/h3l4s/ft_transcendence-42 target="_blank">
-									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=h3l4s&repo=ft_transcendence-42&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42 ft_transcendence" />
-								</a>
-							</details>
-						</td>
-					</tr>
+				</tr>
+				<tr>
+					<td colspan="2" align="center">
+						<details open><summary>Projects</summary>
+							<a href=https://github.com/Alexdelia/42-Python-Modules target="_blank">
+								<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Python-Modules&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-Python-Modules" />
+							</a>
+						</details>
+					</td>
+				</tr>
+			</tr>
+			<tr>
+				<th colspan="2" align="center">
+					<h3>
+						<a href="https://www.typescriptlang.org/" target="blank">
+							<img alt="TypeScript" width="100" src="https://upload.wikimedia.org/wikipedia/commons/4/4c/Typescript_logo_2020.svg" />
+						</a>
+						<img alt="CSS" width="110" src="https://upload.wikimedia.org/wikipedia/commons/6/62/CSS3_logo.svg" />
+						<a href="https://reactjs.org/" target="blank">
+							<img alt="React" width="110" src="https://upload.wikimedia.org/wikipedia/commons/a/a7/React-icon.svg" />
+						</a>
+						<a href="http://nestjs.com/" target="blank">
+							<img alt="NestJS" width="100" src="https://nestjs.com/img/logo-small.svg" />
+						</a>
+						<a href="https://www.postgresql.org/" target="blank">
+							<img alt="PostgreSQL" width="100" src="https://upload.wikimedia.org/wikipedia/commons/2/29/Postgresql_elephant.svg" />
+						</a>
+						<a href="https://typeorm.io/" target="blank">
+							<img alt="TypeORM" width="100" src="https://avatars.githubusercontent.com/u/20165699?s=200&v=4" />
+						</a>
+						<a href="https://www.docker.com/" target="blank">
+							<img alt="Docker" width="100" src="https://www.docker.com/wp-content/uploads/2022/03/vertical-logo-monochromatic.png" />
+						</a>
+					</h3>
+				</th>
+				<tr>
+					<th colspan="2" align="center">
+						<img alt="SoloLearn" height="50" src="https://upload.wikimedia.org/wikipedia/commons/5/53/SoloLearn_logo.svg" />
+					</th>
+				</tr>
+				<tr>
+					<th colspan="2" align="center">
+						<img alt="SoloLearn Full-Stack certification" width="400" src="https://github.com/Alexdelia/Alexdelia/blob/main/certification/SoloLearn_FS.png" />
+					</th>
+				</tr>
+				<tr>
+					<td colspan="2" align="center">
+						<details open><summary>Projects</summary>
+							<a href=https://github.com/h3l4s/ft_transcendence-42 target="_blank">
+								<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=h3l4s&repo=ft_transcendence-42&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-ft_transcendence" />
+							</a>
+						</details>
+					</td>
 				</tr>
 			</tr>
 		</table>
