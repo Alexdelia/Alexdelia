@@ -143,6 +143,9 @@
 								<a href=https://github.com/Alexdelia/42-Rush-Wordle target="_blank">
 									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Rush-Wordle&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-Rush-Wordle" />
 								</a>
+								<a href=https://github.com/Alexdelia/42-Rush-ft_shmup target="_blank">
+									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Rush-ft_shmup&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-Rush-ft_shmup" />
+								</a>
 							</details>
 							<details><summary>IRC server</summary>
 								<a href=https://github.com/Alexdelia/42-ft_irc target="_blank">
