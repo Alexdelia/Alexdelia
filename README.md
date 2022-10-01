@@ -170,9 +170,11 @@
 				<tr>
 					<td colspan="2" align="center">
 						<details open><summary>Projects</summary>
-							<a href=https://github.com/Alexdelia/42-Python-Modules target="_blank">
-								<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Python-Modules&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-Python-Modules" />
-							</a>
+							<details open><summary>Basics</summary>
+								<a href=https://github.com/Alexdelia/42-Python-Modules target="_blank">
+									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Python-Modules&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-Python-Modules" />
+								</a>
+							</details>
 						</details>
 					</td>
 				</tr>
