@@ -80,9 +80,6 @@
 								<a href=https://github.com/Alexdelia/42-Rush-Connect4 target="_blank">
 									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Rush-Connect4&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-Rush-Connect4" />
 								</a>
-								<a href=https://github.com/Alexdelia/42-Rush-Retro-MFA target="_blank">
-									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Rush-Retro-MFA&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-Rush-Retro-MFA" />
-								</a>
 							</details>
 							<details><summary>Graphic</summary>
 								<a href=https://github.com/Alexdelia/42-fract-ol target="_blank">
