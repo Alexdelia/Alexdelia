@@ -216,8 +216,8 @@
 				<tr>
 					<td colspan="2" align="center">
 						<details open><summary>Projects</summary>
-							<a href=https://github.com/h3l4s/ft_transcendence-42 target="_blank">
-								<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=h3l4s&repo=ft_transcendence-42&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-ft_transcendence" />
+							<a href=https://github.com/gildaslv/ft_transcendence-42 target="_blank">
+								<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=gildaslv&repo=ft_transcendence-42&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-ft_transcendence" />
 							</a>
 						</details>
 					</td>
