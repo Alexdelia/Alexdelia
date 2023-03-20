@@ -15,7 +15,7 @@
 ## Github stats:
 
 <p align="center">
-	<img src="https://komarev.com/ghpvc/?username=Alexdelia&color=d5397b" alt="page views">
+	<img src="https://komarev.com/ghpvc/?username=Alexdelia&color=d5397b&style=for-the-badge" alt="page view">
 </p>
 <p align="center">
 	<img src="https://github.com/Alexdelia/Alexdelia/blob/main/metrics.plugin.isocalendar.fullyear.svg?raw=true" />
@@ -25,7 +25,7 @@
 </p>
 
 <div align="center">
-	<details open><summary>Certification</summary>
+	<details><summary>Certification</summary>
 		<table>
 			<tr>
 				<th colspan="2" align="center">
@@ -234,7 +234,7 @@
 </div>
 
 <div align="center">
-	<details><summary>More</summary>
+	<details open><summary>More</summary>
 		<p align="center">
 			<img src="https://github-readme-stats.vercel.app/api?username=Alexdelia&show_icons=true&count_private=true&include_all_commits=true&theme=radical&hide_border=true" alt="Alexdelia" />
 			<img src="https://github-readme-streak-stats.herokuapp.com?user=Alexdelia&theme=radical&date_format=j%20M%5B%20Y%5D&hide_border=true" />
