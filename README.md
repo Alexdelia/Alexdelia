@@ -12,14 +12,17 @@
 	</a>
 </p>
 
-## Github stats:
+## github stats:
 
+<!-- page view -->
 <p align="center">
-	<img src="https://komarev.com/ghpvc/?username=Alexdelia&color=d5397b&style=for-the-badge" alt="page view">
+	<img alt="page view" src="https://komarev.com/ghpvc/?username=Alexdelia&color=d5397b&style=for-the-badge">
 </p>
+<!-- 3D commit activity -->
 <p align="center">
-	<img src="https://github.com/Alexdelia/Alexdelia/blob/main/metrics.plugin.isocalendar.fullyear.svg?raw=true" />
+	<img alt="3D commit activity" src="https://github.com/Alexdelia/Alexdelia/blob/main/metrics.plugin.isocalendar.fullyear.svg?raw=true" />
 </p>
+<!-- top languages -->
 <p align="center">
 	<img align="center" alt="top language" src="https://github-readme-stats-olive-nine.vercel.app/api/top-langs/?username=Alexdelia&layout=compact&cache_seconds=1800&theme=radical&langs_count=10&hide_border=true" />
 	<!--
@@ -29,8 +32,22 @@
 	-->
 </p>
 
+<!-- vscode color theme -->
 <div align="center">
-	<details><summary>Certification</summary>
+	<details><summary>vscode color theme</summary>
+		<a href="https://github.com/Alexdelia/vity">
+		<img alt="github hits" src="https://img.shields.io/endpoint?color=d5397b&logo=github&style=for-the-badge&url=https%3A%2F%2Fhits.dwyl.com%2FAlexdelia%2Fvity.json">
+		</a>
+		<a href="https://marketplace.visualstudio.com/items?itemName=Alexdelia.vity">
+			<img alt="Visual Studio Marketplace Downloads" src="https://img.shields.io/visual-studio-marketplace/d/Alexdelia.vity?color=informational&logo=visualstudiocode&style=for-the-badge">
+		</a>
+	</details>
+</div>
+	
+
+<!-- certifications -->
+<div align="center">
+	<details><summary>certification</summary>
 		<table>
 			<tr>
 				<th colspan="2" align="center">
@@ -54,8 +71,8 @@
 				</tr>
 				<tr>
 					<td colspan="2" align="center">
-						<details open><summary>Projects</summary>
-							<details><summary>Basics</summary>
+						<details open><summary>projects</summary>
+							<details><summary>basics</summary>
 								<a href=https://github.com/Alexdelia/42-Libft target="_blank">
 									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Libft&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42 Libft" />
 								</a>
@@ -66,7 +83,7 @@
 									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-get-next-line&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="get next line" />
 								</a>
 							</details>
-							<details><summary>Rush (2 days projects in group of 2)</summary>
+							<details><summary>rush (2 days projects in group of 2)</summary>
 								<a href=https://github.com/Alexdelia/42-BSQ target="_blank">
 									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-BSQ&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-BSQ" />
 								</a>
@@ -86,7 +103,7 @@
 									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Rush-Connect4&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-Rush-Connect4" />
 								</a>
 							</details>
-							<details><summary>Graphic</summary>
+							<details><summary>graphic</summary>
 								<a href=https://github.com/Alexdelia/42-fract-ol target="_blank">
 									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-fract-ol&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-fract-ol" />
 								</a>
@@ -94,12 +111,12 @@
 									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-miniRT&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-miniRT" />
 								</a>
 							</details>
-							<details><summary>Sorting</summary>
+							<details><summary>sorting</summary>
 								<a href=https://github.com/Alexdelia/42-push_swap target="_blank">
 									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-push_swap&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-push_swap" />
 								</a>
 							</details>
-							<details><summary>Unix/Shell</summary>
+							<details><summary>unix/shell</summary>
 								<a href=https://github.com/Alexdelia/42-minishell target="_blank">
 									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-minishell&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-minishell" />
 								</a>
@@ -107,7 +124,7 @@
 									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-minitalk&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-minitalk" />
 								</a>
 							</details>
-							<details><summary>Thread</summary>
+							<details><summary>thread</summary>
 								<a href=https://github.com/Alexdelia/42-Philosophers target="_blank">
 									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Philosophers&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-Philosophers" />
 								</a>
@@ -132,8 +149,8 @@
 				</tr>
 				<tr>
 					<td colspan="2" align="center">
-						<details open><summary>Projects</summary>
-							<details><summary>Basics</summary>
+						<details open><summary>projects</summary>
+							<details><summary>basics</summary>
 								<a href=https://github.com/Alexdelia/42-CPP-Module target="_blank">
 									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-CPP-Module&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-CPP-Module" />
 								</a>
@@ -141,7 +158,7 @@
 									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-ft_containers&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-ft_containers" />
 								</a>
 							</details>
-							<details><summary>Rush</summary>
+							<details><summary>rush</summary>
 								<a href=https://github.com/Alexdelia/42-Rush-Wordle target="_blank">
 									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Rush-Wordle&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-Rush-Wordle" />
 								</a>
@@ -174,8 +191,8 @@
 				</tr>
 				<tr>
 					<td colspan="2" align="center">
-						<details open><summary>Projects</summary>
-							<details open><summary>Basics</summary>
+						<details open><summary>projects</summary>
+							<details open><summary>basics</summary>
 								<a href=https://github.com/Alexdelia/42-Python-Modules target="_blank">
 									<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=Alexdelia&repo=42-Python-Modules&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-Python-Modules" />
 								</a>
@@ -220,7 +237,7 @@
 				</tr>
 				<tr>
 					<td colspan="2" align="center">
-						<details open><summary>Projects</summary>
+						<details open><summary>projects</summary>
 							<a href=https://github.com/gildaslv/ft_transcendence-42 target="_blank">
 								<img src="https://github-readme-stats-olive-nine.vercel.app/api/pin?username=gildaslv&repo=ft_transcendence-42&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" alt="42-ft_transcendence" />
 							</a>
@@ -232,14 +249,16 @@
 	</details>
 </div>
 
+<!-- project Euler -->
 <div align="center">
-	<details><summary>Project Euler</summary>
+	<details><summary>roject Euler</summary>
 		<img align="center" src="https://projecteuler.net/profile/Alexdelia.png" />
 	</details>
 </div>
 
+<!-- more stats -->
 <div align="center">
-	<details open><summary>More</summary>
+	<details open><summary>more</summary>
 		<p align="center">
 			<img src="https://github-readme-stats.vercel.app/api?username=Alexdelia&show_icons=true&count_private=true&include_all_commits=true&theme=radical&hide_border=true" alt="Alexdelia" />
 			<img src="https://github-readme-streak-stats.herokuapp.com?user=Alexdelia&theme=radical&date_format=j%20M%5B%20Y%5D&hide_border=true" />
