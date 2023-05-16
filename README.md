@@ -34,9 +34,10 @@
 
 <!-- vscode color theme -->
 <div align="center">
-	<details><summary>vscode color theme</summary>
+	<details open><summary>vscode color theme</summary>
 		<a href="https://github.com/Alexdelia/vity">
-		<img alt="github hits" src="https://img.shields.io/endpoint?color=d5397b&logo=github&style=for-the-badge&url=https%3A%2F%2Fhits.dwyl.com%2FAlexdelia%2Fvity.json">
+			<img alt="click animation" src="https://raw.githubusercontent.com/Alexdelia/Alexdelia/main/ressources/click.gif" width="24rem"/>
+			<img alt="github hits" src="https://img.shields.io/endpoint?color=d5397b&logo=github&style=for-the-badge&url=https%3A%2F%2Fhits.dwyl.com%2FAlexdelia%2Fvity.json">
 		</a>
 		<a href="https://marketplace.visualstudio.com/items?itemName=Alexdelia.vity">
 			<img alt="Visual Studio Marketplace Downloads" src="https://img.shields.io/visual-studio-marketplace/d/Alexdelia.vity?color=informational&logo=visualstudiocode&style=for-the-badge">
