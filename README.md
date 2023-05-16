@@ -36,7 +36,6 @@
 <div align="center">
 	<details open><summary>vscode color theme</summary>
 		<a href="https://github.com/Alexdelia/vity">
-			<img alt="click animation" src="https://raw.githubusercontent.com/Alexdelia/Alexdelia/main/ressources/click.gif" width="24rem"/>
 			<img alt="github hits" src="https://img.shields.io/endpoint?color=d5397b&logo=github&style=for-the-badge&url=https%3A%2F%2Fhits.dwyl.com%2FAlexdelia%2Fvity.json">
 		</a>
 		<a href="https://marketplace.visualstudio.com/items?itemName=Alexdelia.vity">
@@ -56,7 +55,7 @@
 				</th>
 				<tr>
 					<th align="center">
-						<img alt="CodinGame" height="40" src="https://github.com/Alexdelia/Alexdelia/blob/main/ressources/CodinGame_logo.png" />
+						<img alt="CodinGame" height="40" src="https://github.com/Alexdelia/Alexdelia/blob/main/asset/CodinGame_logo.png" />
 					</th>
 					<th align="center">
 						<img alt="SoloLearn" height="50" src="https://upload.wikimedia.org/wikipedia/commons/5/53/SoloLearn_logo.svg" />
