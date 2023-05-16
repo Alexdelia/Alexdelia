@@ -21,7 +21,12 @@
 	<img src="https://github.com/Alexdelia/Alexdelia/blob/main/metrics.plugin.isocalendar.fullyear.svg?raw=true" />
 </p>
 <p align="center">
-	<img src="https://github-readme-stats-olive-nine.vercel.app/api/top-langs/?username=Alexdelia&layout=compact&cache_seconds=1800&theme=radical&langs_count=10&hide_border=true" alt="Alexdelia" />
+	<img align="center" alt="top language" src="https://github-readme-stats-olive-nine.vercel.app/api/top-langs/?username=Alexdelia&layout=compact&cache_seconds=1800&theme=radical&langs_count=10&hide_border=true" />
+	<!--
+	<a href="https://wakatime.com/@Alexdelia">
+		<img align="center" alt="wakatime" src="https://github-readme-stats.vercel.app/api/wakatime?username=Alexdelia&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" />
+	</a>
+	-->
 </p>
 
 <div align="center">
