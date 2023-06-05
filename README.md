@@ -46,6 +46,7 @@
 	
 
 <!-- certifications -->
+<!--
 <div align="center">
 	<details><summary>certification</summary>
 		<table>
@@ -248,10 +249,11 @@
 		</table>
 	</details>
 </div>
+-->
 
 <!-- project Euler -->
 <div align="center">
-	<details><summary>roject Euler</summary>
+	<details open><summary>roject Euler</summary>
 		<img align="center" src="https://projecteuler.net/profile/Alexdelia.png" />
 	</details>
 </div>
