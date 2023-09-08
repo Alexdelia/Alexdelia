@@ -12,7 +12,7 @@
 	</a>
 </p>
 
-## github stats:
+## stats:
 
 <!-- page view -->
 <p align="center">
@@ -21,6 +21,15 @@
 <!-- 3D commit activity -->
 <p align="center">
 	<img alt="3D commit activity" src="https://github.com/Alexdelia/Alexdelia/blob/main/metrics.plugin.isocalendar.fullyear.svg?raw=true" />
+</p>
+<!-- wakatime activity -->
+<p align="center">
+	<a href="https://wakatime.com/@Alexdelia">
+		<figure>
+			<embed src="https://wakatime.com/share/@Alexdelia/875cffe5-4a95-478d-8d72-24f764a84d5a.svg" />
+		</figure>
+		<img alt="wakatime activity" src="https://wakatime.com/share/@Alexdelia/875cffe5-4a95-478d-8d72-24f764a84d5a.svg" />
+	</a>
 </p>
 <!-- top languages -->
 <p align="center">
@@ -31,6 +40,16 @@
 	</a>
 	-->
 </p>
+<!-- wakatime languages -->
+<p align="center">
+	<a href="https://wakatime.com/@Alexdelia">
+		<figure>
+			<embed src="https://wakatime.com/share/@Alexdelia/824bf8ea-c975-4ee1-9c03-170c9a096d1a.svg" />
+		</figure>
+		<img alt="wakatime languages" src="https://wakatime.com/share/@Alexdelia/824bf8ea-c975-4ee1-9c03-170c9a096d1a.svg" />
+	</a>
+</p>
+
 
 <!-- vscode color theme -->
 <div align="center">
