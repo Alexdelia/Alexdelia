@@ -14,36 +14,40 @@
 
 ## stats:
 
-<!-- page view -->
 <p align="center">
+	<!-- page view -->
 	<img alt="page view" src="https://komarev.com/ghpvc/?username=Alexdelia&color=d5397b&style=for-the-badge" />
+	<!-- wakatime total -->
 	<a href="https://wakatime.com/@da413fd4-a0f0-498f-a02e-aca4dc9c26c3">
 		<img alt="wakatime total" src="https://wakatime.com/badge/user/da413fd4-a0f0-498f-a02e-aca4dc9c26c3.svg?color=d5397b&style=for-the-badge" />
 	</a>
 </p>
-<!-- 3D commit activity -->
+<!-- activity -->
 <p align="center">
-	<img alt="3D commit activity" src="https://github.com/Alexdelia/Alexdelia/blob/main/metrics.plugin.isocalendar.fullyear.svg?raw=true" />
+	<details open align="center"><summary>activity</summary>
+		<!-- 3D commit activity -->
+		<img align="center" alt="3D commit activity" src="https://github.com/Alexdelia/Alexdelia/blob/main/metrics.plugin.isocalendar.fullyear.svg?raw=true" />
+		<br />
+		<!-- wakatime activity -->
+		<a align="center" href="https://wakatime.com/@Alexdelia">
+			<h>wakatime activity</h>
+			<img alt="wakatime activity" src="https://wakatime.com/share/@Alexdelia/875cffe5-4a95-478d-8d72-24f764a84d5a.svg" />
+		</a>
+	</details>
 </p>
-<!-- wakatime activity -->
+<!-- languages -->
 <p align="center">
-	<a href="https://wakatime.com/@Alexdelia">
-		<h>wakatime activity</h>
-		<img alt="wakatime activity" src="https://wakatime.com/share/@Alexdelia/875cffe5-4a95-478d-8d72-24f764a84d5a.svg" />
-	</a>
-</p>
-<!-- top languages -->
-<p align="center">
-	<img align="center" alt="top language" src="https://github-readme-stats-olive-nine.vercel.app/api/top-langs/?username=Alexdelia&layout=compact&cache_seconds=1800&theme=radical&langs_count=10&hide_border=true" />
-</p>
-<!-- wakatime languages -->
-<p align="center">
-	<a href="https://wakatime.com/@Alexdelia">
-		<img 
-			alt="wakatime languages"
-			width="64%"
-			src="https://wakatime.com/share/@Alexdelia/824bf8ea-c975-4ee1-9c03-170c9a096d1a.svg" />
-	</a>
+	<details open align="center"><summary>languages</summary>
+		<!-- top languages -->
+		<img align="center" alt="top language" src="https://github-readme-stats-olive-nine.vercel.app/api/top-langs/?username=Alexdelia&layout=compact&cache_seconds=1800&theme=radical&langs_count=10&hide_border=true" />
+		<!-- wakatime languages -->
+		<a href="https://wakatime.com/@Alexdelia">
+			<img align="center"
+				alt="wakatime languages"
+				width="64%"
+				src="https://wakatime.com/share/@Alexdelia/824bf8ea-c975-4ee1-9c03-170c9a096d1a.svg" />
+		</a>
+	</details>
 </p>
 
 
