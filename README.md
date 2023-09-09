@@ -16,7 +16,10 @@
 
 <!-- page view -->
 <p align="center">
-	<img alt="page view" src="https://komarev.com/ghpvc/?username=Alexdelia&color=d5397b&style=for-the-badge">
+	<img alt="page view" src="https://komarev.com/ghpvc/?username=Alexdelia&color=d5397b&style=for-the-badge" />
+	<a href="https://wakatime.com/@da413fd4-a0f0-498f-a02e-aca4dc9c26c3">
+		<img alt="wakatime total" src="https://wakatime.com/badge/user/da413fd4-a0f0-498f-a02e-aca4dc9c26c3.svg?color=d5397b&style=for-the-badge" />
+	</a>
 </p>
 <!-- 3D commit activity -->
 <p align="center">
@@ -25,27 +28,16 @@
 <!-- wakatime activity -->
 <p align="center">
 	<a href="https://wakatime.com/@Alexdelia">
-		<figure>
-			<embed src="https://wakatime.com/share/@Alexdelia/875cffe5-4a95-478d-8d72-24f764a84d5a.svg" />
-		</figure>
 		<img alt="wakatime activity" src="https://wakatime.com/share/@Alexdelia/875cffe5-4a95-478d-8d72-24f764a84d5a.svg" />
 	</a>
 </p>
 <!-- top languages -->
 <p align="center">
 	<img align="center" alt="top language" src="https://github-readme-stats-olive-nine.vercel.app/api/top-langs/?username=Alexdelia&layout=compact&cache_seconds=1800&theme=radical&langs_count=10&hide_border=true" />
-	<!--
-	<a href="https://wakatime.com/@Alexdelia">
-		<img align="center" alt="wakatime" src="https://github-readme-stats.vercel.app/api/wakatime?username=Alexdelia&layout=compact&cache_seconds=1800&theme=radical&hide_border=true" />
-	</a>
-	-->
 </p>
 <!-- wakatime languages -->
 <p align="center">
 	<a href="https://wakatime.com/@Alexdelia">
-		<figure>
-			<embed src="https://wakatime.com/share/@Alexdelia/824bf8ea-c975-4ee1-9c03-170c9a096d1a.svg" />
-		</figure>
 		<img alt="wakatime languages" src="https://wakatime.com/share/@Alexdelia/824bf8ea-c975-4ee1-9c03-170c9a096d1a.svg" />
 	</a>
 </p>
