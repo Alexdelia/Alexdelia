@@ -31,11 +31,20 @@
 		<!-- 3D commit activity -->
 		<img align="center" alt="3D commit activity" src="https://github.com/Alexdelia/Alexdelia/blob/main/metrics.plugin.isocalendar.fullyear.svg?raw=true" />
 		<br />
-		<!-- wakatime activity -->
+		<!-- wakatime activity
+		<!-- last year -->
+		<a align="center" href="https://wakatime.com/@Alexdelia">
+			<h>wakatime activity</h>
+			<br/>
+			<img alt="wakatime activity" src="https://wakatime.com/share/@Alexdelia/180c1465-7def-4209-b6b3-08858e2464a4.svg" />
+		</a>
+		<!-- all time -->
+		<!--
 		<a align="center" href="https://wakatime.com/@Alexdelia">
 			<h>wakatime activity</h>
 			<img alt="wakatime activity" src="https://wakatime.com/share/@Alexdelia/875cffe5-4a95-478d-8d72-24f764a84d5a.svg" />
 		</a>
+		-->
 	</details>
 </p>
 <!-- languages -->
