@@ -28,6 +28,7 @@
 <!-- wakatime activity -->
 <p align="center">
 	<a href="https://wakatime.com/@Alexdelia">
+		<h>wakatime activity</h>
 		<img alt="wakatime activity" src="https://wakatime.com/share/@Alexdelia/875cffe5-4a95-478d-8d72-24f764a84d5a.svg" />
 	</a>
 </p>
@@ -38,7 +39,10 @@
 <!-- wakatime languages -->
 <p align="center">
 	<a href="https://wakatime.com/@Alexdelia">
-		<img alt="wakatime languages" src="https://wakatime.com/share/@Alexdelia/824bf8ea-c975-4ee1-9c03-170c9a096d1a.svg" />
+		<img 
+			alt="wakatime languages"
+			width="50%"
+			src="https://wakatime.com/share/@Alexdelia/824bf8ea-c975-4ee1-9c03-170c9a096d1a.svg" />
 	</a>
 </p>
 
