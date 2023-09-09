@@ -41,7 +41,7 @@
 	<a href="https://wakatime.com/@Alexdelia">
 		<img 
 			alt="wakatime languages"
-			width="50%"
+			width="64%"
 			src="https://wakatime.com/share/@Alexdelia/824bf8ea-c975-4ee1-9c03-170c9a096d1a.svg" />
 	</a>
 </p>
