@@ -8,7 +8,10 @@
 
 <p align="center">
 	<a href="https://github.com/JaeSeoKim/badge42">
-		<img src="https://badge42.vercel.app/api/v2/cl1dqb1ym001109mswwj0wv3x/stats?darkmode=true&cursusId=21&coalitionId=47" />
+		<img align="center" alt="JaeSeoKim's 42 badge for adelille" src="https://badge42.vercel.app/api/v2/cl1dqb1ym001109mswwj0wv3x/stats?darkmode=true&cursusId=21&coalitionId=47" />
+	</a>
+	<a href="https://github.com/oakoudad/badge42">
+		<img align="center" alt="oakoudad's 42 badge for adelille" src="https://badge.mediaplus.ma/starryblue/adelille?1337Badge=off&UM6P=off" />
 	</a>
 </p>
 
