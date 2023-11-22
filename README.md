@@ -284,7 +284,7 @@
 
 <!-- project Euler -->
 <div align="center">
-	<details open><summary>roject Euler</summary>
+	<details open><summary>project Euler</summary>
 		<img align="center" src="https://projecteuler.net/profile/Alexdelia.png" />
 	</details>
 </div>
