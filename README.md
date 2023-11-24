@@ -2,7 +2,7 @@
 
 <p align="center">
 	<img align="center"
-		width="20%"
+		width="15%"
 		src="https://github.com/Alexdelia/Alexdelia/blob/main/pikacute.png?raw=true"
 	/>
 </p>
@@ -15,7 +15,7 @@
 	</a> -->
 	<a href="https://github.com/oakoudad/badge42">
 		<img align="center" 
-			width="70%"
+			width="50%"
 			alt="oakoudad's 42 badge for adelille"
 			src="https://badge.mediaplus.ma/starryblue/adelille?1337Badge=off&UM6P=off"
 		/>
@@ -73,7 +73,7 @@
 	<details open align="center"><summary>languages</summary>
 		<!-- top languages -->
 		<img align="center"
-			width="33%"
+			width="32%"
 			alt="top languages"
 			src="https://github-readme-stats-olive-nine.vercel.app/api/top-langs/?username=Alexdelia&layout=donut&cache_seconds=1800&theme=radical&langs_count=20&hide_border=true"
 		/>
@@ -81,7 +81,7 @@
 		<!-- wakatime languages -->
 		<a href="https://wakatime.com/@Alexdelia">
 			<img align="center"
-				width="67%"
+				width="66%"
 				alt="wakatime languages"
 				src="https://wakatime.com/share/@Alexdelia/824bf8ea-c975-4ee1-9c03-170c9a096d1a.svg"
 			/>
@@ -320,7 +320,7 @@
 	<details open><summary>project Euler</summary>
 		<a href="https://projecteuler.net/progress=Alexdelia">
 			<img align="center"
-				width="30%"
+				width="28%"
 				alt="project Euler"
 				src="https://projecteuler.net/profile/Alexdelia.png"
 			/>
@@ -333,13 +333,13 @@
 	<details open><summary>more</summary>
 		<p align="center">
 			<img align="center"
-				width="50%"
+				width="49%"
 				alt="Github stats"
 				loading="eager"
 				src="https://github-readme-stats.vercel.app/api?username=Alexdelia&show_icons=true&count_private=true&include_all_commits=true&theme=radical&hide_border=true"
 			/>
 			<img align="center"
-				width="50%"
+				width="49%"
 				alt="commit stats"
 				loading="eager"
 				src="https://github-readme-streak-stats.herokuapp.com?user=Alexdelia&theme=radical&date_format=j%20M%5B%20Y%5D&hide_border=true"
@@ -347,12 +347,12 @@
 		</p>
 		<p align="center">
 			<img align="center"
-				width="50%"
+				width="49%"
 				alt="metrics achievements"
 				src="https://github.com/Alexdelia/Alexdelia/blob/main/metrics.plugin.achievements.svg?raw=true"
 			/>
 			<img align="center"
-				width="50%"
+				width="49%"
 				alt="metrics stats"
 				src="https://github.com/Alexdelia/Alexdelia/blob/main/metrics.plugin.lines.svg?raw=true"
 			/>
