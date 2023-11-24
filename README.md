@@ -1,7 +1,10 @@
 # Hi
 
 <p align="center">
-	<img align="center" src="https://github.com/Alexdelia/Alexdelia/blob/main/pikacute.png?raw=true" />
+	<img align="center"
+		width="20%"
+		src="https://github.com/Alexdelia/Alexdelia/blob/main/pikacute.png?raw=true"
+	/>
 </p>
 
 ## I'm a student at 42 Paris:
@@ -12,7 +15,7 @@
 	</a> -->
 	<a href="https://github.com/oakoudad/badge42">
 		<img align="center" 
-			align="center"
+			width="70%"
 			alt="oakoudad's 42 badge for adelille"
 			src="https://badge.mediaplus.ma/starryblue/adelille?1337Badge=off&UM6P=off"
 		/>
@@ -40,7 +43,7 @@
 	<details open align="center"><summary>activity</summary>
 		<!-- 3D commit activity -->
 		<img align="center"
-			width="60%"
+			width="70%"
 			alt="3D commit activity"
 			src="https://github.com/Alexdelia/Alexdelia/blob/main/metrics.plugin.isocalendar.fullyear.svg?raw=true"
 		/>
@@ -51,7 +54,7 @@
 			<h>wakatime activity</h>
 			<br/>
 			<img align="center"
-				width="80%"
+				width="100%"
 				alt="wakatime activity"
 				src="https://wakatime.com/share/@Alexdelia/180c1465-7def-4209-b6b3-08858e2464a4.svg"
 			/>
@@ -70,7 +73,7 @@
 	<details open align="center"><summary>languages</summary>
 		<!-- top languages -->
 		<img align="center"
-			width="25%"
+			width="33%"
 			alt="top languages"
 			src="https://github-readme-stats-olive-nine.vercel.app/api/top-langs/?username=Alexdelia&layout=donut&cache_seconds=1800&theme=radical&langs_count=20&hide_border=true"
 		/>
@@ -78,7 +81,7 @@
 		<!-- wakatime languages -->
 		<a href="https://wakatime.com/@Alexdelia">
 			<img align="center"
-				width="55%"
+				width="67%"
 				alt="wakatime languages"
 				src="https://wakatime.com/share/@Alexdelia/824bf8ea-c975-4ee1-9c03-170c9a096d1a.svg"
 			/>
@@ -91,10 +94,16 @@
 <div align="center">
 	<details open><summary>vscode color theme</summary>
 		<a href="https://github.com/Alexdelia/vity">
-			<img align="center" alt="github hits" src="https://img.shields.io/endpoint?color=d5397b&logo=github&style=for-the-badge&url=https%3A%2F%2Fhits.dwyl.com%2FAlexdelia%2Fvity.json">
+			<img align="center"
+				alt="github hits"
+				src="https://img.shields.io/endpoint?color=d5397b&logo=github&style=for-the-badge&url=https%3A%2F%2Fhits.dwyl.com%2FAlexdelia%2Fvity.json"
+			/>
 		</a>
 		<a href="https://marketplace.visualstudio.com/items?itemName=Alexdelia.vity">
-			<img align="center" alt="Visual Studio Marketplace Downloads" src="https://img.shields.io/visual-studio-marketplace/d/Alexdelia.vity?color=informational&logo=visualstudiocode&style=for-the-badge">
+			<img align="center"
+				alt="Visual Studio Marketplace Downloads"
+				src="https://img.shields.io/visual-studio-marketplace/d/Alexdelia.vity?color=informational&logo=visualstudiocode&style=for-the-badge"
+			/>
 		</a>
 	</details>
 </div>
@@ -311,7 +320,7 @@
 	<details open><summary>project Euler</summary>
 		<a href="https://projecteuler.net/progress=Alexdelia">
 			<img align="center"
-				width="20%"
+				width="30%"
 				alt="project Euler"
 				src="https://projecteuler.net/profile/Alexdelia.png"
 			/>
@@ -324,13 +333,13 @@
 	<details open><summary>more</summary>
 		<p align="center">
 			<img align="center"
-				width="40%"
+				width="50%"
 				alt="Github stats"
 				loading="eager"
 				src="https://github-readme-stats.vercel.app/api?username=Alexdelia&show_icons=true&count_private=true&include_all_commits=true&theme=radical&hide_border=true"
 			/>
 			<img align="center"
-				width="40%"
+				width="50%"
 				alt="commit stats"
 				loading="eager"
 				src="https://github-readme-streak-stats.herokuapp.com?user=Alexdelia&theme=radical&date_format=j%20M%5B%20Y%5D&hide_border=true"
@@ -338,12 +347,12 @@
 		</p>
 		<p align="center">
 			<img align="center"
-				width="40%"
+				width="50%"
 				alt="metrics achievements"
 				src="https://github.com/Alexdelia/Alexdelia/blob/main/metrics.plugin.achievements.svg?raw=true"
 			/>
 			<img align="center"
-				width="40%"
+				width="50%"
 				alt="metrics stats"
 				src="https://github.com/Alexdelia/Alexdelia/blob/main/metrics.plugin.lines.svg?raw=true"
 			/>
