@@ -293,8 +293,8 @@
 <div align="center">
 	<details open><summary>more</summary>
 		<p align="center">
-			<img src="https://github-readme-stats.vercel.app/api?username=Alexdelia&show_icons=true&count_private=true&include_all_commits=true&theme=radical&hide_border=true" alt="Alexdelia" />
-			<img src="https://github-readme-streak-stats.herokuapp.com?user=Alexdelia&theme=radical&date_format=j%20M%5B%20Y%5D&hide_border=true" />
+			<img src="https://github-readme-stats.vercel.app/api?username=Alexdelia&show_icons=true&count_private=true&include_all_commits=true&theme=radical&hide_border=true" alt="Github stats" loading="eager" />
+			<img src="https://github-readme-streak-stats.herokuapp.com?user=Alexdelia&theme=radical&date_format=j%20M%5B%20Y%5D&hide_border=true" alt="commit stats" loading="eager" />
 		</p>
 		<p align="center">
 			<img src="https://github.com/Alexdelia/Alexdelia/blob/main/metrics.plugin.achievements.svg?raw=true"/>
