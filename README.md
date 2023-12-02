@@ -3,7 +3,7 @@
 <p align="center">
 	<img align="center"
 		width="15%"
-		src="https://github.com/Alexdelia/Alexdelia/blob/main/pikacute.png?raw=true"
+		src="https://github.com/Alexdelia/Alexdelia/blob/main/ferris.png?raw=true"
 	/>
 </p>
 
