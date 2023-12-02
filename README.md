@@ -2,7 +2,7 @@
 
 <p align="center">
 	<img align="center"
-		width="15%"
+		width="20%"
 		src="https://github.com/Alexdelia/Alexdelia/blob/main/ferris.png?raw=true"
 	/>
 </p>
