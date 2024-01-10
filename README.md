@@ -75,7 +75,7 @@
 		<img align="center"
 			width="32%"
 			alt="top languages"
-			src="https://github-readme-stats-olive-nine.vercel.app/api/top-langs/?username=Alexdelia&layout=donut&cache_seconds=1800&theme=radical&langs_count=20&hide_border=true"
+			src="https://github-readme-stats.vercel.app/api/top-langs/?username=Alexdelia&layout=donut&cache_seconds=1800&theme=radical&langs_count=20&hide_border=true"
 		/>
 		<!-- <img align="center" alt="wakatime languages" src="https://github-readme-stats-olive-nine.vercel.app/api/wakatime/?username=Alexdelia&layout=donut&theme=radical&hide_border=true" /> -->
 		<!-- wakatime languages -->
