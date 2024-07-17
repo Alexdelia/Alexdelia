@@ -336,7 +336,7 @@
 				width="49%"
 				alt="Github stats"
 				loading="eager"
-				src="https://github-readme-stats.vercel.app/api?username=Alexdelia&show_icons=true&count_private=true&include_all_commits=true&theme=radical&hide_border=true"
+				src="https://github-readme-stats.vercel.app/api?username=Alexdelia&show_icons=true&theme=radical&hide_border=true&count_private=true&include_all_commits=true&show=reviews,discussions_started,discussions_answered,prs_merged,prs_merged_percentage"
 			/>
 			<img align="center"
 				width="49%"
