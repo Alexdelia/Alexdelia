@@ -7,7 +7,7 @@
 	/>
 </p>
 
-## I'm a student at 42 Paris:
+## I'm a student at 42 Paris
 
 <p align="center">
 	<!-- <a href="https://github.com/JaeSeoKim/badge42">
@@ -22,7 +22,7 @@
 	</a>
 </p>
 
-## stats:
+## stats
 
 <p align="center">
 	<!-- page view -->
@@ -88,7 +88,6 @@
 		</a>
 	</details>
 </p>
-
 
 <!-- vscode color theme -->
 <div align="center">
