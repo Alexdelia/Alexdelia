@@ -107,7 +107,6 @@
 		</a>
 	</details>
 </div>
-	
 
 <!-- certifications -->
 <!--
