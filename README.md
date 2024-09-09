@@ -90,6 +90,7 @@
 </p>
 
 <!-- vscode color theme -->
+<!--
 <div align="center">
 	<details open><summary>vscode color theme</summary>
 		<a href="https://github.com/Alexdelia/vity">
@@ -106,6 +107,7 @@
 		</a>
 	</details>
 </div>
+-->
 
 <!-- certifications -->
 <!--
