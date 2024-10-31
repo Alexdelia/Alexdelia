@@ -20,6 +20,13 @@
 			src="https://badge.mediaplus.ma/starryblue/adelille?1337Badge=off&UM6P=off"
 		/>
 	</a>
+	<!-- <a href="https://github.com/oakoudad/badge42">
+		<img align="center" 
+			width="50%"
+			alt="nimon's 42 badge for adelille"
+			src="https://badge.nimon.fr/api/v2/cm2x8yawh3861601pf4nmat5rr/stats?cursusId=21&coalitionId=47"
+		/>
+	</a> -->
 </p>
 
 ## stats
