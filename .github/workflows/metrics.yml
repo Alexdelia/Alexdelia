@@ -20,6 +20,7 @@ jobs:
 #          config_timezone: Europe/Paris
   achievement:
     runs-on: ubuntu-latest
+    timeout-minutes: 6
     steps:
       - uses: gh-metrics/metrics@master
         with:
@@ -35,6 +36,7 @@ jobs:
           plugin_achievements_threshold: C
   achievement_all:
     runs-on: ubuntu-latest
+    timeout-minutes: 6
     steps:
       - uses: gh-metrics/metrics@master
         with:
@@ -50,6 +52,7 @@ jobs:
           plugin_achievements_threshold: X
   lines-changed:
     runs-on: ubuntu-latest
+    timeout-minutes: 6
     steps:
       - uses: gh-metrics/metrics@master
         with:
