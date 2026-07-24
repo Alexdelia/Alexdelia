@@ -82,7 +82,7 @@
 		<img align="center"
 			width="32%"
 			alt="top languages"
-			src="https://github-readme-stats.vercel.app/api/top-langs/?username=Alexdelia&layout=donut&cache_seconds=1800&theme=radical&langs_count=20&hide_border=true"
+			src="https://github-stats-extended.vercel.app/api/top-langs/?username=Alexdelia&layout=donut&cache_seconds=1800&theme=radical&langs_count=20&hide_border=true"
 		/>
 		<!-- <img align="center" alt="wakatime languages" src="https://github-readme-stats-olive-nine.vercel.app/api/wakatime/?username=Alexdelia&layout=donut&theme=radical&hide_border=true" /> -->
 		<!-- wakatime languages -->
@@ -343,7 +343,7 @@
 				width="49%"
 				alt="Github stats"
 				loading="eager"
-				src="https://github-readme-stats.vercel.app/api?username=Alexdelia&show_icons=true&theme=radical&hide_border=true&count_private=true&include_all_commits=true&show=reviews,discussions_started,discussions_answered,prs_merged,prs_merged_percentage"
+				src="https://github-stats-extended.vercel.app/api?username=Alexdelia&show_icons=true&theme=radical&hide_border=true&count_private=true&include_all_commits=true&show=reviews,discussions_started,discussions_answered,prs_merged,prs_merged_percentage"
 			/>
 			<img align="center"
 				width="49%"
