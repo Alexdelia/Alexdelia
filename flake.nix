@@ -35,7 +35,7 @@
         toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
         craneLib = (crane.mkLib pkgs).overrideToolchain (_: toolchain);
 
-        isAsset = path: _type: builtins.match ".*/crate/gen/asset(/.*)?" path != null;
+        isAsset = path: _type: builtins.match ".*/crate/profile-gen/asset(/.*)?" path != null;
 
         src = pkgs.lib.cleanSourceWith {
           src = ./.;
