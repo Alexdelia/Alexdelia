@@ -30,7 +30,8 @@ pub(crate) fn command(repo: &Path) -> Command {
 	}
 	command
 		.env("GIT_CONFIG_GLOBAL", "/dev/null")
-		.env("GIT_CONFIG_NOSYSTEM", "1");
+		.env("GIT_CONFIG_NOSYSTEM", "1")
+		.env("GIT_TERMINAL_PROMPT", "0");
 	command
 }
 
@@ -84,6 +85,15 @@ mod tests {
 		for name in LOCAL_ENV_VARS {
 			assert!(is_removed(&command, name), "{name}");
 		}
+	}
+
+	#[test]
+	fn terminal_prompt_is_disabled() {
+		assert!(is_set_to(
+			&command(Path::new(".")),
+			"GIT_TERMINAL_PROMPT",
+			"0"
+		));
 	}
 
 	#[test]

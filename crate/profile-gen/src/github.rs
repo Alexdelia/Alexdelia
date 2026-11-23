@@ -1,0 +1,594 @@
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
+
+use serde::Deserialize;
+
+use crate::error::Result;
+use crate::git;
+
+const API: &str = "https://api.github.com";
+const USER_AGENT: &str = "profile-gen";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_PAGES: u32 = 100;
+const MIRROR_REFSPEC: &str = "+refs/heads/*:refs/heads/*";
+
+pub trait Fetch {
+	fn get(&self, url: &str, token: Option<&str>) -> Result<String>;
+}
+
+#[derive(Debug, Default)]
+pub struct Ureq;
+
+impl Fetch for Ureq {
+	fn get(&self, url: &str, token: Option<&str>) -> Result<String> {
+		let agent: ureq::Agent = ureq::Agent::config_builder()
+			.timeout_global(Some(REQUEST_TIMEOUT))
+			.build()
+			.into();
+		let mut request = agent.get(url).header("User-Agent", USER_AGENT);
+		if let Some(token) = token {
+			request = request.header("Authorization", format!("Bearer {token}"));
+		}
+		Ok(request.call()?.body_mut().read_to_string()?)
+	}
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoInfo {
+	pub name: String,
+	pub clone_url: String,
+}
+
+#[derive(Deserialize)]
+struct Repo {
+	name: String,
+	#[serde(default)]
+	fork: bool,
+	#[serde(default)]
+	private: bool,
+	clone_url: Option<String>,
+	ssh_url: Option<String>,
+}
+
+fn list_pages(
+	fetch: &dyn Fetch,
+	token: Option<&str>,
+	page_url: &dyn Fn(u32) -> String,
+) -> Result<Vec<Repo>> {
+	let mut repos = Vec::new();
+	for page in 1..=MAX_PAGES {
+		let body = fetch.get(&page_url(page), token)?;
+		let page_repos: Vec<Repo> = serde_json::from_str(&body)?;
+		if page_repos.is_empty() {
+			return Ok(repos);
+		}
+		repos.extend(page_repos);
+	}
+	Err(format!("more than {MAX_PAGES} pages of repos").into())
+}
+
+fn into_info(name: String, url: Option<String>) -> Result<RepoInfo> {
+	let clone_url = url.ok_or_else(|| format!("repo {name} has no clone url"))?;
+	Ok(RepoInfo { name, clone_url })
+}
+
+pub fn list_public(
+	fetch: &impl Fetch,
+	owner: &str,
+	token: Option<&str>,
+	exclude: &[String],
+) -> Result<Vec<RepoInfo>> {
+	public_repos(fetch, owner, token, exclude)
+}
+
+fn public_repos(
+	fetch: &dyn Fetch,
+	owner: &str,
+	token: Option<&str>,
+	exclude: &[String],
+) -> Result<Vec<RepoInfo>> {
+	list_pages(fetch, token, &|page| {
+		format!("{API}/users/{owner}/repos?type=owner&per_page=100&page={page}")
+	})?
+	.into_iter()
+	.filter(|repo| !repo.fork && !repo.private && !exclude.contains(&repo.name))
+	.map(|repo| into_info(repo.name, repo.clone_url))
+	.collect()
+}
+
+pub fn list_private(fetch: &impl Fetch, token: &str, exclude: &[String]) -> Result<Vec<RepoInfo>> {
+	private_repos(fetch, token, exclude)
+}
+
+fn private_repos(fetch: &dyn Fetch, token: &str, exclude: &[String]) -> Result<Vec<RepoInfo>> {
+	list_pages(fetch, Some(token), &|page| {
+		format!("{API}/user/repos?visibility=private&affiliation=owner&per_page=100&page={page}")
+	})?
+	.into_iter()
+	.filter(|repo| !repo.fork && !exclude.contains(&repo.name))
+	.map(|repo| into_info(repo.name, repo.ssh_url))
+	.collect()
+}
+
+fn validate_name(name: &str) -> Result<()> {
+	let is_safe_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-');
+	if name.is_empty()
+		|| name == "."
+		|| name == ".."
+		|| name.starts_with('-')
+		|| !name.chars().all(is_safe_char)
+	{
+		return Err(format!("unsafe repo name {name:?}").into());
+	}
+	Ok(())
+}
+
+fn run_git(mut command: Command, cwd: &Path, subcommand: &str) -> Result<()> {
+	let output = command.output()?;
+	if output.status.success() {
+		Ok(())
+	} else {
+		Err(git::failure(cwd, &[subcommand], &output.stderr))
+	}
+}
+
+fn fetch_mirror(path: &Path) -> Result<()> {
+	let mut command = git::command(path);
+	command
+		.env("GIT_DIR", ".")
+		.args(["fetch", "-q", "--prune", "origin", MIRROR_REFSPEC]);
+	run_git(command, path, "fetch")
+}
+
+fn clone_bare(info: &RepoInfo, work: &Path, dir_name: &str) -> Result<()> {
+	std::fs::create_dir_all(work)?;
+	let mut command = git::command(work);
+	command
+		.args(["clone", "-q", "--bare", "--"])
+		.args([info.clone_url.as_str(), dir_name]);
+	run_git(command, work, "clone")
+}
+
+pub fn sync_clone(info: &RepoInfo, work: &Path) -> Result<PathBuf> {
+	validate_name(&info.name)?;
+	let dir_name = format!("{}.git", info.name);
+	let path = work.join(&dir_name);
+	if path.exists() {
+		fetch_mirror(&path)?;
+	} else {
+		clone_bare(info, work, &dir_name)?;
+	}
+	Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::fixture::FixtureRepo;
+	use crate::git;
+	use std::cell::RefCell;
+	use std::collections::HashMap;
+	use std::io::{Read, Write};
+	use std::net::TcpListener;
+	use tempfile::TempDir;
+
+	struct Fake {
+		pages: HashMap<String, String>,
+		seen: RefCell<Vec<(String, Option<String>)>>,
+	}
+
+	impl Fake {
+		fn new(pages: &[(&str, &str)]) -> Self {
+			Self {
+				pages: pages
+					.iter()
+					.map(|(url, body)| ((*url).to_owned(), (*body).to_owned()))
+					.collect(),
+				seen: RefCell::default(),
+			}
+		}
+	}
+
+	impl Fetch for Fake {
+		fn get(&self, url: &str, token: Option<&str>) -> Result<String> {
+			self.seen
+				.borrow_mut()
+				.push((url.to_owned(), token.map(str::to_owned)));
+			self.pages
+				.get(url)
+				.cloned()
+				.ok_or_else(|| format!("no page for {url}").into())
+		}
+	}
+
+	const PUBLIC_PAGE_1: &str = r#"[
+		{"name":"keep","fork":false,"private":false,"clone_url":"https://github.com/o/keep.git","ssh_url":"git@github.com:o/keep.git","id":1},
+		{"name":"forked","fork":true,"private":false,"clone_url":"https://github.com/o/forked.git"},
+		{"name":"hidden","fork":false,"private":true,"clone_url":"https://github.com/o/hidden.git"},
+		{"name":"skipped","fork":false,"private":false,"clone_url":"https://github.com/o/skipped.git"}
+	]"#;
+	const PUBLIC_PAGE_2: &str = r#"[
+		{"name":"second","fork":false,"private":false,"clone_url":"https://github.com/o/second.git"}
+	]"#;
+
+	fn public_url(page: u32) -> String {
+		format!("https://api.github.com/users/o/repos?type=owner&per_page=100&page={page}")
+	}
+
+	fn private_url(page: u32) -> String {
+		format!(
+			"https://api.github.com/user/repos?visibility=private&affiliation=owner&per_page=100&page={page}"
+		)
+	}
+
+	fn info(name: &str, clone_url: &str) -> RepoInfo {
+		RepoInfo {
+			name: name.to_owned(),
+			clone_url: clone_url.to_owned(),
+		}
+	}
+
+	#[test]
+	fn list_public_paginates_and_drops_forks_private_excluded() {
+		let fake = Fake::new(&[
+			(&public_url(1), PUBLIC_PAGE_1),
+			(&public_url(2), PUBLIC_PAGE_2),
+			(&public_url(3), "[]"),
+		]);
+		let list = list_public(&fake, "o", Some("tok"), &["skipped".to_owned()]).unwrap();
+		assert_eq!(
+			list,
+			[
+				info("keep", "https://github.com/o/keep.git"),
+				info("second", "https://github.com/o/second.git"),
+			]
+		);
+		assert!(
+			fake.seen
+				.borrow()
+				.iter()
+				.all(|(_, token)| token.as_deref() == Some("tok"))
+		);
+	}
+
+	#[test]
+	fn list_public_without_token_sends_none() {
+		let fake = Fake::new(&[(&public_url(1), "[]")]);
+		assert_eq!(list_public(&fake, "o", None, &[]).unwrap(), []);
+		assert_eq!(fake.seen.borrow()[0].1, None);
+	}
+
+	#[test]
+	fn list_private_uses_ssh_url_and_drops_forks() {
+		let page = r#"[
+			{"name":"secret","fork":false,"private":true,"ssh_url":"git@github.com:o/secret.git","clone_url":"https://github.com/o/secret.git"},
+			{"name":"forked","fork":true,"private":true,"ssh_url":"git@github.com:o/forked.git"},
+			{"name":"skipped","fork":false,"private":true,"ssh_url":"git@github.com:o/skipped.git"}
+		]"#;
+		let fake = Fake::new(&[(&private_url(1), page), (&private_url(2), "[]")]);
+		let list = list_private(&fake, "tok", &["skipped".to_owned()]).unwrap();
+		assert_eq!(list, [info("secret", "git@github.com:o/secret.git")]);
+		assert_eq!(fake.seen.borrow()[0].1.as_deref(), Some("tok"));
+	}
+
+	#[test]
+	fn fetch_error_propagates() {
+		let fake = Fake::new(&[]);
+		let error = list_public(&fake, "o", None, &[]).unwrap_err();
+		assert!(error.to_string().contains("no page for"));
+		assert!(list_private(&fake, "tok", &[]).is_err());
+	}
+
+	#[test]
+	fn invalid_json_is_an_error() {
+		let fake = Fake::new(&[(&public_url(1), "not json")]);
+		assert!(list_public(&fake, "o", None, &[]).is_err());
+	}
+
+	#[test]
+	fn missing_url_field_is_an_error() {
+		let fake = Fake::new(&[
+			(&public_url(1), r#"[{"name":"x","fork":false}]"#),
+			(&public_url(2), "[]"),
+		]);
+		let error = list_public(&fake, "o", None, &[]).unwrap_err();
+		assert!(error.to_string().contains('x'));
+	}
+
+	struct Endless;
+
+	impl Fetch for Endless {
+		fn get(&self, _url: &str, _token: Option<&str>) -> Result<String> {
+			Ok(PUBLIC_PAGE_2.to_owned())
+		}
+	}
+
+	#[test]
+	fn endless_pagination_stops_with_error() {
+		let error = list_public(&Endless, "o", None, &[]).unwrap_err();
+		assert!(error.to_string().contains("pages"));
+	}
+
+	fn serve_once(response: &'static str) -> (String, std::thread::JoinHandle<String>) {
+		let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+		let url = format!(
+			"http://{}/users/o/repos?page=1",
+			listener.local_addr().unwrap()
+		);
+		let handle = std::thread::spawn(move || {
+			let (mut stream, _) = listener.accept().unwrap();
+			let mut request = Vec::new();
+			let mut buffer = [0_u8; 1024];
+			while !request.ends_with(b"\r\n\r\n") {
+				let read = stream.read(&mut buffer).unwrap();
+				request.extend_from_slice(&buffer[..read]);
+			}
+			stream.write_all(response.as_bytes()).unwrap();
+			String::from_utf8(request).unwrap()
+		});
+		(url, handle)
+	}
+
+	const OK_RESPONSE: &str = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 4\r\nConnection: close\r\n\r\n[42]";
+
+	#[test]
+	fn ureq_sends_user_agent_and_bearer_token() {
+		let (url, handle) = serve_once(OK_RESPONSE);
+		assert_eq!(Ureq.get(&url, Some("secret-token")).unwrap(), "[42]");
+		let request = handle.join().unwrap().to_ascii_lowercase();
+		assert!(request.starts_with("get /users/o/repos?page=1 http/1.1\r\n"));
+		assert!(request.contains("user-agent: profile-gen\r\n"));
+		assert!(request.contains("authorization: bearer secret-token\r\n"));
+	}
+
+	#[test]
+	fn ureq_omits_authorization_without_token() {
+		let (url, handle) = serve_once(OK_RESPONSE);
+		assert_eq!(Ureq.get(&url, None).unwrap(), "[42]");
+		assert!(
+			!handle
+				.join()
+				.unwrap()
+				.to_ascii_lowercase()
+				.contains("authorization")
+		);
+	}
+
+	#[test]
+	fn ureq_http_error_status_is_an_error() {
+		let (url, handle) =
+			serve_once("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+		assert!(Ureq.get(&url, Some("secret-token")).is_err());
+		handle.join().unwrap();
+	}
+
+	#[test]
+	fn ureq_error_never_leaks_token() {
+		let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+		let url = format!("http://{}/", listener.local_addr().unwrap());
+		drop(listener);
+		let error = Ureq.get(&url, Some("secret-token")).unwrap_err();
+		assert!(!format!("{error} {error:?}").contains("secret-token"));
+	}
+
+	#[test]
+	fn ureq_truncated_body_is_an_error() {
+		let (url, handle) =
+			serve_once("HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n[42]");
+		assert!(Ureq.get(&url, None).is_err());
+		handle.join().unwrap();
+	}
+
+	#[test]
+	fn sync_clone_into_a_file_is_an_error() {
+		let work = TempDir::new().unwrap();
+		let blocker = work.path().join("not-a-dir");
+		std::fs::write(&blocker, "").unwrap();
+		assert!(sync_clone(&info("repo", "irrelevant"), &blocker).is_err());
+	}
+
+	#[test]
+	fn sync_clone_with_unrunnable_existing_target_is_an_error() {
+		let work = TempDir::new().unwrap();
+		std::fs::write(work.path().join("repo.git"), "").unwrap();
+		assert!(sync_clone(&info("repo", "irrelevant"), work.path()).is_err());
+	}
+
+	fn clone_head(clone: &Path) -> String {
+		let output = git::command(clone)
+			.args(["rev-parse", "main"])
+			.output()
+			.unwrap();
+		assert!(output.status.success());
+		String::from_utf8(output.stdout).unwrap().trim().to_owned()
+	}
+
+	fn source_info(source: &FixtureRepo) -> RepoInfo {
+		info("repo", source.path().to_str().unwrap())
+	}
+
+	#[test]
+	fn sync_clone_clones_then_fetches_new_commits() {
+		let source = FixtureRepo::new();
+		source.commit("a@example.com", 1, &[("a.c", Some("int a;"))]);
+		let work = TempDir::new().unwrap();
+		let info = source_info(&source);
+
+		let path = sync_clone(&info, work.path()).unwrap();
+		assert_eq!(path, work.path().join("repo.git"));
+		assert_eq!(clone_head(&path), source.head());
+
+		source.commit("a@example.com", 2, &[("b.c", Some("int b;"))]);
+		assert_eq!(sync_clone(&info, work.path()).unwrap(), path);
+		assert_eq!(clone_head(&path), source.head());
+	}
+
+	#[test]
+	fn sync_clone_works_with_relative_work_dir() {
+		let source = FixtureRepo::new();
+		source.commit("a@example.com", 1, &[("a.c", Some("int a;"))]);
+		let scratch = TempDir::new_in(".").unwrap();
+		let work = Path::new(scratch.path().file_name().unwrap()).join("work");
+		assert!(work.is_relative());
+		let info = source_info(&source);
+		let path = sync_clone(&info, &work).unwrap();
+
+		source.commit("a@example.com", 2, &[("b.c", Some("int b;"))]);
+		sync_clone(&info, &work).unwrap();
+		assert_eq!(clone_head(&path), source.head());
+	}
+
+	#[test]
+	fn sync_clone_follows_rewritten_history() {
+		let source = FixtureRepo::new();
+		source.commit("a@example.com", 1, &[("a.c", Some("int a;"))]);
+		source.commit("a@example.com", 2, &[("b.c", Some("int b;"))]);
+		let work = TempDir::new().unwrap();
+		let info = source_info(&source);
+		let path = sync_clone(&info, work.path()).unwrap();
+
+		source.amend("a@example.com", 3, &[("b.c", "int rewritten;")]);
+		sync_clone(&info, work.path()).unwrap();
+		assert_eq!(clone_head(&path), source.head());
+	}
+
+	#[test]
+	fn sync_clone_prunes_deleted_branches() {
+		let source = FixtureRepo::new();
+		source.commit("a@example.com", 1, &[("a.c", Some("int a;"))]);
+		let status = git::command(source.path())
+			.args(["branch", "extra"])
+			.status()
+			.unwrap();
+		assert!(status.success());
+		let work = TempDir::new().unwrap();
+		let info = source_info(&source);
+		let path = sync_clone(&info, work.path()).unwrap();
+		assert_eq!(clone_head(&path), source.head());
+		assert!(
+			git::command(&path)
+				.args(["rev-parse", "extra"])
+				.status()
+				.unwrap()
+				.success()
+		);
+
+		let status = git::command(source.path())
+			.args(["branch", "-D", "extra"])
+			.status()
+			.unwrap();
+		assert!(status.success());
+		sync_clone(&info, work.path()).unwrap();
+		assert!(
+			!git::command(&path)
+				.args(["rev-parse", "extra"])
+				.status()
+				.unwrap()
+				.success()
+		);
+	}
+
+	#[test]
+	fn sync_clone_failure_reports_git_error() {
+		let work = TempDir::new().unwrap();
+		let missing = work.path().join("missing-source");
+		let error = sync_clone(&info("repo", missing.to_str().unwrap()), work.path()).unwrap_err();
+		assert!(error.to_string().starts_with("git clone"));
+	}
+
+	#[test]
+	fn sync_clone_fetch_failure_reports_git_error() {
+		let source = FixtureRepo::new();
+		source.commit("a@example.com", 1, &[("a.c", Some("int a;"))]);
+		let work = TempDir::new().unwrap();
+		let path = sync_clone(&source_info(&source), work.path()).unwrap();
+		drop(source);
+		let error = sync_clone(&info("repo", "ignored"), work.path()).unwrap_err();
+		assert!(error.to_string().starts_with("git fetch"));
+		assert!(path.exists());
+	}
+
+	#[test]
+	fn fetch_in_non_repository_never_touches_enclosing_repository() {
+		let outer = FixtureRepo::new();
+		outer.commit("a@example.com", 1, &[("a.c", Some("int a;"))]);
+		for branch in ["localwork", "feature"] {
+			let status = git::command(outer.path())
+				.args(["branch", branch])
+				.status()
+				.unwrap();
+			assert!(status.success());
+		}
+		let status = git::command(outer.path())
+			.args(["checkout", "-q", "--detach"])
+			.status()
+			.unwrap();
+		assert!(status.success());
+		let upstream = FixtureRepo::new();
+		upstream.commit("a@example.com", 1, &[("a.c", Some("int a;"))]);
+		let status = git::command(outer.path())
+			.args(["remote", "add", "origin"])
+			.arg(upstream.path())
+			.status()
+			.unwrap();
+		assert!(status.success());
+		std::fs::create_dir(outer.path().join("repo.git")).unwrap();
+
+		let error = sync_clone(&info("repo", "irrelevant"), outer.path()).unwrap_err();
+
+		assert!(error.to_string().starts_with("git fetch"));
+		let output = git::command(outer.path())
+			.args(["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+			.output()
+			.unwrap();
+		let mut branches: Vec<_> = String::from_utf8(output.stdout)
+			.unwrap()
+			.lines()
+			.map(str::to_owned)
+			.collect();
+		branches.sort();
+		assert_eq!(branches, ["feature", "localwork", "main"]);
+	}
+
+	#[test]
+	fn clone_url_starting_with_dash_is_not_an_option() {
+		let work = TempDir::new().unwrap();
+		let error =
+			sync_clone(&info("repo", "--upload-pack=touch pwned"), work.path()).unwrap_err();
+		assert!(
+			error
+				.to_string()
+				.contains("repository '--upload-pack=touch pwned'"),
+			"{error}"
+		);
+		assert!(!work.path().join("pwned").exists());
+	}
+
+	#[test]
+	fn unsafe_names_are_rejected() {
+		let work = TempDir::new().unwrap();
+		for name in [
+			"",
+			".",
+			"..",
+			"a/b",
+			"../x",
+			"a b",
+			"-x",
+			"r\u{e9}po",
+			"a\\b",
+		] {
+			let error = sync_clone(&info(name, "irrelevant"), work.path()).unwrap_err();
+			assert!(error.to_string().contains("unsafe repo name"), "{name:?}");
+		}
+		assert_eq!(std::fs::read_dir(work.path()).unwrap().count(), 0);
+	}
+
+	#[test]
+	fn safe_names_are_accepted_by_validation() {
+		for name in ["a", "my-repo", "my_repo.js", "A1.b-c_d"] {
+			assert!(validate_name(name).is_ok(), "{name:?}");
+		}
+	}
+}

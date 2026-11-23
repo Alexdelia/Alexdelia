@@ -4,6 +4,7 @@ pub mod error;
 #[cfg(test)]
 mod fixture;
 mod git;
+pub mod github;
 pub mod history;
 pub mod language;
 
