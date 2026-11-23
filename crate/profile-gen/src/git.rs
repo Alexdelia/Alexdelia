@@ -1,6 +1,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use crate::error::Result;
+
 const LOCAL_ENV_VARS: [&str; 16] = [
 	"GIT_DIR",
 	"GIT_WORK_TREE",
@@ -30,6 +32,33 @@ pub(crate) fn command(repo: &Path) -> Command {
 		.env("GIT_CONFIG_GLOBAL", "/dev/null")
 		.env("GIT_CONFIG_NOSYSTEM", "1");
 	command
+}
+
+pub(crate) fn failure(
+	repo: &Path,
+	args: &[&str],
+	stderr: &[u8],
+) -> Box<dyn std::error::Error + Send + Sync> {
+	format!(
+		"git {} in {}: {}",
+		args[0],
+		repo.display(),
+		String::from_utf8_lossy(stderr).trim()
+	)
+	.into()
+}
+
+pub(crate) fn head_sha(repo: &Path) -> Result<Option<String>> {
+	let output = command(repo)
+		.args(["rev-parse", "--verify", "--quiet", "HEAD"])
+		.output()?;
+	match output.status.code() {
+		Some(0) => Ok(Some(
+			String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+		)),
+		Some(1) => Ok(None),
+		_ => Err(failure(repo, &["rev-parse"], &output.stderr)),
+	}
 }
 
 #[cfg(test)]

@@ -27,7 +27,7 @@ pub fn attributes(repo: &Path, paths: &[String]) -> Result<HashMap<String, Attri
 		.iter()
 		.map(|path| (path.clone(), Attribute::Default))
 		.collect();
-	if !has_head(repo)? {
+	if git::head_sha(repo)?.is_none() {
 		return Ok(map);
 	}
 	let stdin: Vec<u8> = paths
@@ -78,7 +78,7 @@ fn merge(current: Attribute, name: &str, value: &str) -> Attribute {
 }
 
 pub fn attributes_blob(repo: &Path) -> Result<Option<String>> {
-	if !has_head(repo)? {
+	if git::head_sha(repo)?.is_none() {
 		return Ok(None);
 	}
 	run_git(repo, &["ls-tree", "HEAD", ".gitattributes"], &[]).map(|output| {
@@ -87,31 +87,6 @@ pub fn attributes_blob(repo: &Path) -> Result<Option<String>> {
 			.nth(2)
 			.map(str::to_owned)
 	})
-}
-
-fn has_head(repo: &Path) -> Result<bool> {
-	let output = git::command(repo)
-		.args(["rev-parse", "--verify", "--quiet", "HEAD"])
-		.output()?;
-	match output.status.code() {
-		Some(0) => Ok(true),
-		Some(1) => Ok(false),
-		_ => Err(git_failure(repo, &["rev-parse"], &output.stderr)),
-	}
-}
-
-fn git_failure(
-	repo: &Path,
-	args: &[&str],
-	stderr: &[u8],
-) -> Box<dyn std::error::Error + Send + Sync> {
-	format!(
-		"git {} in {}: {}",
-		args[0],
-		repo.display(),
-		String::from_utf8_lossy(stderr).trim()
-	)
-	.into()
 }
 
 fn run_git(repo: &Path, args: &[&str], stdin: &[u8]) -> Result<Vec<u8>> {
@@ -128,7 +103,7 @@ fn run_git(repo: &Path, args: &[&str], stdin: &[u8]) -> Result<Vec<u8>> {
 			if output.status.success() {
 				Ok(output.stdout)
 			} else {
-				Err(git_failure(repo, args, &output.stderr))
+				Err(git::failure(repo, args, &output.stderr))
 			}
 		})
 }

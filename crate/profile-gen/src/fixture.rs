@@ -39,6 +39,14 @@ impl FixtureRepo {
 		self.git(&["commit", "-q", "-m", "fixture"], author_email, unix_ts);
 	}
 
+	pub(crate) fn empty_commit(&self, author_email: &str, unix_ts: i64) {
+		self.git(
+			&["commit", "-q", "--allow-empty", "-m", "fixture empty"],
+			author_email,
+			unix_ts,
+		);
+	}
+
 	pub(crate) fn mv(&self, from: &str, to: &str, unix_ts: i64) {
 		let to_parent = self.path().join(to);
 		std::fs::create_dir_all(to_parent.parent().unwrap()).unwrap();

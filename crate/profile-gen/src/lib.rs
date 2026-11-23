@@ -3,6 +3,7 @@ pub mod error;
 #[cfg(test)]
 mod fixture;
 mod git;
+pub mod history;
 pub mod language;
 
 use clap::{Parser, Subcommand};
