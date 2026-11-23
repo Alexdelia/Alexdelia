@@ -47,6 +47,18 @@ impl FixtureRepo {
 		);
 	}
 
+	pub(crate) fn amend(&self, author_email: &str, unix_ts: i64, changes: &[(&str, &str)]) {
+		for (path, content) in changes {
+			std::fs::write(self.path().join(path), content).unwrap();
+		}
+		self.git(&["add", "-A"], author_email, unix_ts);
+		self.git(
+			&["commit", "-q", "--amend", "--no-edit"],
+			author_email,
+			unix_ts,
+		);
+	}
+
 	pub(crate) fn mv(&self, from: &str, to: &str, unix_ts: i64) {
 		let to_parent = self.path().join(to);
 		std::fs::create_dir_all(to_parent.parent().unwrap()).unwrap();

@@ -97,7 +97,7 @@ const VIM_SCRIPT: Language = Language {
 	color: "#199f4b",
 };
 
-const LANGUAGE_LIST: [Language; 23] = [
+pub(crate) const LANGUAGE_LIST: [Language; 23] = [
 	RUST, C, CPP, NIX, PYTHON, TYPESCRIPT, JAVASCRIPT, SHELL, MAKEFILE, DOCKERFILE, GO, JAVA, LUA,
 	HTML, CSS, SCSS, OPENSCAD, GLSL, BOO, HASKELL, ASSEMBLY, CMAKE, VIM_SCRIPT,
 ];

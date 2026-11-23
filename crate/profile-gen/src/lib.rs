@@ -1,4 +1,5 @@
 pub mod attributes;
+pub mod cache;
 pub mod error;
 #[cfg(test)]
 mod fixture;
