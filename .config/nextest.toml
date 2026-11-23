@@ -1,0 +1,5 @@
+[profile.default]
+slow-timeout = { period = "250ms", terminate-after = 20 }
+
+[profile.coverage]
+slow-timeout = { period = "250ms", terminate-after = 120 }

@@ -1,0 +1,19 @@
+[package]
+name = "profile-gen"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "profile_gen"
+
+[[bin]]
+name = "profile-gen"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+
+[lints]
+workspace = true
