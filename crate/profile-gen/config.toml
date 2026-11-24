@@ -1,0 +1,5 @@
+owner = "Alexdelia"
+authors = []
+exclude_repos = []
+top_n = 8
+max_frames = 150

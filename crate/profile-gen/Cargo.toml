@@ -17,6 +17,7 @@ clap.workspace = true
 jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 twox-hash.workspace = true
 ureq.workspace = true
 

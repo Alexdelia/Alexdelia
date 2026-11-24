@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>profile-gen preview</title>
+<style>
+body { margin: 0; font-family: sans-serif; }
+section { padding: 24px; }
+.white { background: #ffffff; color: #1f2328; }
+.dark { background: #0d1117; color: #e6edf3; }
+img { max-width: 100%; height: auto; display: block; }
+</style>
+</head>
+<body>
+<section class="white">
+<h2>White background, light variant</h2>
+<img src="../../out/languages-light.svg" alt="languages light">
+</section>
+<section class="dark">
+<h2>Dark background, dark variant</h2>
+<img src="../../out/languages-dark.svg" alt="languages dark">
+</section>
+<section class="white">
+<h2>Picture, follows system color scheme</h2>
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="../../out/languages-dark.svg">
+<source media="(prefers-color-scheme: light)" srcset="../../out/languages-light.svg">
+<img src="../../out/languages-light.svg" alt="languages">
+</picture>
+</section>
+</body>
+</html>
