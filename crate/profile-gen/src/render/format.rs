@@ -33,14 +33,6 @@ pub(super) fn compact(lines: u64) -> String {
 	}
 }
 
-pub(super) fn repo_label(count: u32) -> String {
-	if count == 1 {
-		"1 repo".to_owned()
-	} else {
-		format!("{count} repos")
-	}
-}
-
 pub(super) const fn arrow(direction: Direction) -> &'static str {
 	match direction {
 		Direction::Up => "&#x2191;",
@@ -103,6 +95,12 @@ mod tests {
 		assert_eq!(num(12.0, 1), "12");
 		assert_eq!(num(6.11372, 3), "6.114");
 		assert_eq!(float(u64::MAX), f64::from(u32::MAX));
+	}
+
+	#[test]
+	fn trend_words_name_each_direction() {
+		let word_list = [Direction::Up, Direction::Down, Direction::Flat].map(trend_word);
+		assert_eq!(word_list, ["up", "down", "flat"]);
 	}
 
 	#[test]

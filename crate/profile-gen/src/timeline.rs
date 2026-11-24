@@ -7,10 +7,6 @@ use crate::cache::Usage;
 use crate::history::Week;
 use crate::language::{Language, language_by_name};
 
-const OTHER: Language = Language {
-	name: "other",
-	color: "#8b949e",
-};
 const BASIS_POINTS: u64 = 10_000;
 const TREND_WEEKS: usize = 52;
 
@@ -54,7 +50,7 @@ pub struct Entry {
 	pub language: usize,
 	pub lines: u64,
 	pub share_bp: u32,
-	pub repos: Option<u32>,
+	pub repos: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,12 +63,13 @@ pub struct Frame {
 pub struct Timeline {
 	pub languages: Vec<LanguageSummary>,
 	pub frames: Vec<Frame>,
+	pub top_n: usize,
 }
 
 struct Series {
 	language: Language,
 	weekly: Vec<u64>,
-	first_use: Option<Vec<Week>>,
+	first_use: Vec<Week>,
 }
 
 #[must_use]
@@ -81,23 +78,35 @@ pub fn timeline(usage: &Usage, top_n: usize, max_frames: usize) -> Timeline {
 	if weeks.is_empty() {
 		return Timeline::default();
 	}
-	let series_list = series_list(usage, &weeks, top_n);
-	let cumulative_list: Vec<Vec<u64>> = series_list
+	let frame_indices = sample_indices(weeks.len(), max_frames);
+	let known = known_series(usage, &weeks);
+	let known_cumulative: Vec<Vec<u64>> = known
 		.iter()
 		.map(|series| cumulative(&series.weekly))
 		.collect();
-	let languages = series_list
+	let shown = within_top_n_somewhere(&known, &known_cumulative, &frame_indices, top_n);
+	let all_cumulative = cumulative(&all_weekly(usage, &weeks));
+	let series_list: Vec<&Series> = shown.iter().map(|index| &known[*index]).collect();
+	let languages: Vec<LanguageSummary> = series_list
 		.iter()
 		.map(|series| summary(series, &weeks))
-		.collect::<Vec<_>>();
-	let frames = sample_indices(weeks.len(), max_frames)
+		.collect();
+	let frames = frame_indices
 		.into_iter()
 		.map(|index| {
-			let lines: Vec<u64> = cumulative_list.iter().map(|list| list[index]).collect();
-			frame(weeks[index], &lines, &series_list, &languages)
+			let lines: Vec<u64> = shown
+				.iter()
+				.map(|known_index| known_cumulative[*known_index][index])
+				.collect();
+			let hidden = all_cumulative[index] - lines.iter().sum::<u64>();
+			frame(weeks[index], &lines, hidden, &series_list, &languages)
 		})
 		.collect();
-	Timeline { languages, frames }
+	Timeline {
+		languages,
+		frames,
+		top_n,
+	}
 }
 
 fn week_range(usage: &Usage) -> Vec<Week> {
@@ -117,64 +126,77 @@ fn week_range(usage: &Usage) -> Vec<Week> {
 	.collect()
 }
 
-fn series_list(usage: &Usage, weeks: &[Week], top_n: usize) -> Vec<Series> {
+fn known_series(usage: &Usage, weeks: &[Week]) -> Vec<Series> {
 	let name_set: BTreeSet<&'static str> = usage
 		.weeks
 		.values()
 		.flat_map(|lines| lines.keys().copied())
 		.collect();
-	let mut known = Vec::new();
-	let mut folded = Vec::new();
-	for name in name_set {
-		let weekly: Vec<u64> = weeks
-			.iter()
-			.map(|week| {
-				usage
-					.weeks
-					.get(week)
-					.and_then(|lines| lines.get(name))
-					.copied()
-					.unwrap_or(0)
-			})
-			.collect();
-		if weekly.iter().sum::<u64>() == 0 {
-			continue;
-		}
-		match language_by_name(name) {
-			Some(language) => known.push(Series {
+	let mut known: Vec<Series> = name_set
+		.into_iter()
+		.filter_map(|name| {
+			let language = language_by_name(name)?;
+			let weekly: Vec<u64> = weeks
+				.iter()
+				.map(|week| {
+					usage
+						.weeks
+						.get(week)
+						.and_then(|lines| lines.get(name))
+						.copied()
+						.unwrap_or(0)
+				})
+				.collect();
+			(weekly.iter().sum::<u64>() > 0).then(|| Series {
 				language,
 				weekly,
-				first_use: Some(usage.first_use.get(name).cloned().unwrap_or_default()),
-			}),
-			None => folded.push(weekly),
-		}
-	}
+				first_use: usage.first_use.get(name).cloned().unwrap_or_default(),
+			})
+		})
+		.collect();
 	known.sort_by_key(|series| {
 		(
 			Reverse(series.weekly.iter().sum::<u64>()),
 			series.language.name,
 		)
 	});
-	folded.extend(
-		known
-			.split_off(top_n.min(known.len()))
-			.into_iter()
-			.map(|series| series.weekly),
-	);
-	if !folded.is_empty() {
-		known.push(Series {
-			language: OTHER,
-			weekly: sum_elementwise(&folded, weeks.len()),
-			first_use: None,
-		});
-	}
 	known
 }
 
-fn sum_elementwise(list: &[Vec<u64>], length: usize) -> Vec<u64> {
-	(0..length)
-		.map(|index| list.iter().map(|weekly| weekly[index]).sum())
+fn all_weekly(usage: &Usage, weeks: &[Week]) -> Vec<u64> {
+	weeks
+		.iter()
+		.map(|week| {
+			usage
+				.weeks
+				.get(week)
+				.map_or(0, |lines| lines.values().sum())
+		})
 		.collect()
+}
+
+fn within_top_n_somewhere(
+	known: &[Series],
+	known_cumulative: &[Vec<u64>],
+	frame_indices: &[usize],
+	top_n: usize,
+) -> Vec<usize> {
+	let mut shown = vec![false; known.len()];
+	for index in frame_indices {
+		let mut ranked: Vec<usize> = (0..known.len())
+			.filter(|known_index| known_cumulative[*known_index][*index] > 0)
+			.collect();
+		ranked.sort_by_key(|known_index| {
+			(
+				Reverse(known_cumulative[*known_index][*index]),
+				known[*known_index].language.name,
+			)
+		});
+		for known_index in ranked.into_iter().take(top_n) {
+			shown[known_index] = true;
+		}
+	}
+	(0..known.len()).filter(|index| shown[*index]).collect()
 }
 
 fn cumulative(weekly: &[u64]) -> Vec<u64> {
@@ -219,26 +241,31 @@ fn sample_indices(count: usize, max_frames: usize) -> Vec<usize> {
 fn frame(
 	week: Week,
 	lines: &[u64],
-	series_list: &[Series],
+	hidden: u64,
+	series_list: &[&Series],
 	languages: &[LanguageSummary],
 ) -> Frame {
 	let present: Vec<usize> = (0..lines.len()).filter(|index| lines[*index] > 0).collect();
-	let present_lines: Vec<u64> = present.iter().map(|index| lines[*index]).collect();
+	let mut counted: Vec<u64> = present.iter().map(|index| lines[*index]).collect();
+	counted.push(hidden);
 	let mut entries: Vec<Entry> = present
 		.iter()
-		.zip(shares(&present_lines))
+		.zip(shares(&counted))
 		.map(|(index, share_bp)| Entry {
 			language: *index,
 			lines: lines[*index],
 			share_bp,
-			repos: series_list[*index].first_use.as_ref().map(|first_use| {
-				u32::try_from(first_use.partition_point(|first| *first <= week)).unwrap_or(u32::MAX)
-			}),
+			repos: u32::try_from(
+				series_list[*index]
+					.first_use
+					.partition_point(|first| *first <= week),
+			)
+			.unwrap_or(u32::MAX),
 		})
 		.collect();
 	entries.sort_by_key(|entry| {
 		(
-			Reverse(entry.share_bp),
+			Reverse(entry.lines),
 			languages[entry.language].language.name,
 		)
 	});
@@ -358,7 +385,7 @@ mod tests {
 				)
 			})
 			.collect();
-		assert_eq!(first, [("Rust", 3334), ("C", 3333), ("Go", 3333)]);
+		assert_eq!(first, [("C", 3333), ("Go", 3333), ("Rust", 3334)]);
 	}
 
 	#[test]
@@ -392,11 +419,13 @@ mod tests {
 				.entries
 				.iter()
 				.find(|entry| result.languages[entry.language].language.name == name)
-				.and_then(|entry| entry.repos)
+				.map(|entry| entry.repos)
 		};
 		let rust: Vec<_> = (0..4).map(|frame| repos(frame, "Rust")).collect();
 		assert_eq!(rust, [Some(1), Some(1), Some(1), Some(2)]);
 		assert_eq!(repos(1, "C"), Some(1));
+		let unlisted = timeline(&usage(&[(0, "Go", 5)], &[]), 10, 100);
+		assert_eq!(unlisted.frames[0].entries[0].repos, 0);
 	}
 
 	fn summary_of(timeline: &Timeline, name: &str) -> LanguageSummary {
@@ -477,34 +506,60 @@ mod tests {
 		)
 	}
 
-	#[test]
-	fn folds_beyond_top_n_into_other() {
-		let result = timeline(&five_languages(), 3, 100);
-		assert_eq!(names(&result), ["Rust", "C", "Go", "other"]);
-		let other = summary_of(&result, "other");
-		assert_eq!(other.language.color, "#8b949e");
-		assert_eq!(other.since, week(1));
-		assert_eq!(
-			other.trend,
-			Trend {
-				last_year: 300,
-				previous_year: 0
-			}
-		);
-		let last = result.frames.last().unwrap();
-		let entry = last
+	fn share_of(timeline: &Timeline, frame: usize, name: &str) -> Option<u32> {
+		timeline.frames[frame]
 			.entries
 			.iter()
-			.find(|entry| result.languages[entry.language].language.name == "other")
-			.unwrap();
-		assert_eq!(entry.lines, 300);
-		assert_eq!(entry.repos, None);
-		let total: u32 = last.entries.iter().map(|entry| entry.share_bp).sum();
-		assert_eq!(total, 10_000);
+			.find(|entry| timeline.languages[entry.language].language.name == name)
+			.map(|entry| entry.share_bp)
 	}
 
 	#[test]
-	fn no_other_when_within_top_n() {
+	fn languages_never_within_top_n_are_not_drawn_but_counted() {
+		let result = timeline(&five_languages(), 3, 100);
+		assert_eq!(names(&result), ["Rust", "C", "Go"]);
+		assert_eq!(result.top_n, 3);
+		let last = result.frames.len() - 1;
+		assert_eq!(share_of(&result, last, "Rust"), Some(3333));
+		assert_eq!(share_of(&result, last, "Go"), Some(2000));
+		let shown: u32 = result.frames[last]
+			.entries
+			.iter()
+			.map(|entry| entry.share_bp)
+			.sum();
+		assert_eq!(shown, 8000);
+		assert!(!names(&result).contains(&"other"));
+	}
+
+	#[test]
+	fn language_within_top_n_at_any_frame_is_a_candidate() {
+		let usage = usage(
+			&[
+				(0, "Go", 100),
+				(0, "Rust", 50),
+				(0, "Nix", 10),
+				(1, "C", 200),
+				(2, "Python", 300),
+			],
+			&[],
+		);
+		let result = timeline(&usage, 2, 100);
+		assert_eq!(names(&result), ["Python", "C", "Go", "Rust"]);
+		let order = |frame: usize| -> Vec<&str> {
+			result.frames[frame]
+				.entries
+				.iter()
+				.map(|entry| result.languages[entry.language].language.name)
+				.collect()
+		};
+		assert_eq!(order(0), ["Go", "Rust"]);
+		assert_eq!(order(1), ["C", "Go", "Rust"]);
+		assert_eq!(order(2), ["Python", "C", "Go", "Rust"]);
+		assert_eq!(share_of(&result, 2, "Rust"), Some(758));
+	}
+
+	#[test]
+	fn all_languages_shown_within_top_n() {
 		let result = timeline(&five_languages(), 5, 100);
 		assert_eq!(names(&result), ["Rust", "C", "Go", "Nix", "Python"]);
 		let result = timeline(&five_languages(), 9, 100);
@@ -512,11 +567,11 @@ mod tests {
 	}
 
 	#[test]
-	fn unknown_language_is_folded_into_other() {
-		let usage = usage(&[(0, "Rust", 10), (0, "Unknown", 5)], &[]);
-		let result = timeline(&usage, 10, 100);
-		assert_eq!(names(&result), ["Rust", "other"]);
-		assert_eq!(lines_of(&result, 0, "other"), Some(5));
+	fn unknown_language_is_hidden_but_counted() {
+		let usage = usage(&[(0, "Rust", 10), (0, "Unknown", 100)], &[]);
+		let result = timeline(&usage, 1, 100);
+		assert_eq!(names(&result), ["Rust"]);
+		assert_eq!(share_of(&result, 0, "Rust"), Some(909));
 	}
 
 	#[test]

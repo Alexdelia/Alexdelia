@@ -4,7 +4,9 @@ use serde::Deserialize;
 
 use crate::error::Result;
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub const MIN_SECONDS_PER_YEAR: f64 = 2.1;
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
 	pub owner: String,
@@ -12,6 +14,7 @@ pub struct Config {
 	pub exclude_repos: Vec<String>,
 	pub top_n: usize,
 	pub max_frames: usize,
+	pub seconds_per_year: f64,
 }
 
 impl Config {
@@ -19,6 +22,19 @@ impl Config {
 		let config: Self = toml::from_str(text)?;
 		if config.authors.is_empty() {
 			return Err("config: authors must not be empty".into());
+		}
+		if config.top_n == 0 {
+			return Err("config: top_n must be positive".into());
+		}
+		if config.max_frames == 0 {
+			return Err("config: max_frames must be positive".into());
+		}
+		if !(config.seconds_per_year.is_finite() && config.seconds_per_year >= MIN_SECONDS_PER_YEAR)
+		{
+			return Err(format!(
+				"config: seconds_per_year must be finite and at least {MIN_SECONDS_PER_YEAR}"
+			)
+			.into());
 		}
 		Ok(config)
 	}
@@ -39,6 +55,7 @@ authors = ["a@example.com"]
 exclude_repos = ["x"]
 top_n = 3
 max_frames = 10
+seconds_per_year = 2.5
 "#;
 
 	#[test]
@@ -48,6 +65,32 @@ max_frames = 10
 		assert_eq!(config.authors, ["a@example.com"]);
 		assert_eq!(config.exclude_repos, ["x"]);
 		assert_eq!((config.top_n, config.max_frames), (3, 10));
+		assert!((config.seconds_per_year - 2.5).abs() < f64::EPSILON);
+	}
+
+	fn rejection(from: &str, to: &str) -> String {
+		Config::parse(&VALID.replace(from, to))
+			.unwrap_err()
+			.to_string()
+	}
+
+	#[test]
+	fn config_rejects_zero_counts() {
+		assert!(rejection("top_n = 3", "top_n = 0").contains("top_n"));
+		assert!(rejection("max_frames = 10", "max_frames = 0").contains("max_frames"));
+	}
+
+	#[test]
+	fn config_rejects_non_positive_or_non_finite_pace() {
+		for bad in ["0", "-1", "-0.5", "inf", "nan", "2", "1.5"] {
+			let error = rejection(
+				"seconds_per_year = 2.5",
+				&format!("seconds_per_year = {bad}"),
+			);
+			assert!(error.contains("seconds_per_year"), "{bad}: {error}");
+		}
+		let integer = Config::parse(&VALID.replace("2.5", "5")).unwrap();
+		assert!((integer.seconds_per_year - 5.0).abs() < f64::EPSILON);
 	}
 
 	#[test]
@@ -58,10 +101,11 @@ max_frames = 10
 	}
 
 	#[test]
-	fn shipped_config_parses_once_authors_are_filled() {
-		let text = include_str!("../config.toml")
-			.replace("authors = []", r#"authors = ["a@example.com"]"#);
-		assert_eq!(Config::parse(&text).unwrap().owner, "Alexdelia");
+	fn shipped_config_parses_with_dense_pacing() {
+		let config = Config::parse(include_str!("../config.toml")).unwrap();
+		assert_eq!(config.owner, "Alexdelia");
+		assert_eq!((config.top_n, config.max_frames), (16, 520));
+		assert!((config.seconds_per_year - 5.0).abs() < f64::EPSILON);
 	}
 
 	#[test]

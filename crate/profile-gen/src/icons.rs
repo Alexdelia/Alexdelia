@@ -68,7 +68,7 @@ mod tests {
 			.filter(|name| icon_path(name).is_none())
 			.collect();
 		assert_eq!(missing, ["Makefile", "Boo", "Assembly"]);
-		assert_eq!(icon_path("other"), None);
+		assert_eq!(icon_path("Unknown"), None);
 	}
 
 	#[test]

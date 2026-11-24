@@ -52,19 +52,23 @@ pub fn render(
 	token: Option<&str>,
 	paths: &Paths,
 ) -> Result<()> {
+	let private = read_private(&paths.private)?;
 	let cache_dir = paths.out.join(CACHE_DIR);
 	std::fs::create_dir_all(&cache_dir)?;
 	let cache_path = cache_dir.join(CACHE_FILE);
 	let cache = refresh_cache(config, fetch, token, &paths.work, &cache_path)?;
 	cache::save(&cache, &cache_path)?;
 
-	let usage = cache::usage(&cache).merge(read_private(&paths.private)?);
+	let usage = cache::usage(&cache).merge(private);
 	let timeline = timeline(&usage, config.top_n, config.max_frames);
 	for (variant, file) in [
 		(Variant::Dark, "languages-dark.svg"),
 		(Variant::Light, "languages-light.svg"),
 	] {
-		std::fs::write(paths.out.join(file), render_languages(&timeline, variant))?;
+		std::fs::write(
+			paths.out.join(file),
+			render_languages(&timeline, variant, config.seconds_per_year),
+		)?;
 	}
 	Ok(())
 }
@@ -113,6 +117,7 @@ mod tests {
 			exclude_repos: Vec::new(),
 			top_n: 8,
 			max_frames: 150,
+			seconds_per_year: 5.0,
 		}
 	}
 
@@ -205,6 +210,29 @@ mod tests {
 		let paths = paths(&dir);
 		std::fs::write(&paths.private, "not json").unwrap();
 		assert!(render(&config(), &listing(&[("alpha", &alpha)]), None, &paths).is_err());
+	}
+
+	struct CountingFetch(std::cell::Cell<usize>);
+
+	impl Fetch for CountingFetch {
+		fn get(&self, _url: &str, _token: Option<&str>) -> Result<String> {
+			self.0.set(self.0.get() + 1);
+			Ok("[]".to_owned())
+		}
+	}
+
+	#[test]
+	fn render_validates_private_json_before_listing_repos() {
+		let dir = TempDir::new().unwrap();
+		let paths = paths(&dir);
+		std::fs::write(&paths.private, "not json").unwrap();
+		let fetch = CountingFetch(std::cell::Cell::new(0));
+		assert!(render(&config(), &fetch, None, &paths).is_err());
+		assert_eq!(fetch.0.get(), 0);
+		assert!(!paths.out.join("cache/languages.json").exists());
+		std::fs::remove_file(&paths.private).unwrap();
+		render(&config(), &fetch, None, &paths).unwrap();
+		assert_eq!(fetch.0.get(), 1);
 	}
 
 	#[test]

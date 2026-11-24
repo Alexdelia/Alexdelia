@@ -79,7 +79,6 @@ mod tests {
 				.iter()
 				.map(|language| language.color.to_ascii_lowercase()),
 		);
-		all.push("#8b949e".to_owned());
 		let mut unique = all.clone();
 		unique.sort();
 		unique.dedup();
