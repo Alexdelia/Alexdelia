@@ -6,7 +6,10 @@ mod fixture;
 mod git;
 pub mod github;
 pub mod history;
+pub mod icons;
 pub mod language;
+pub mod render;
+pub mod theme;
 pub mod timeline;
 
 use clap::{Parser, Subcommand};

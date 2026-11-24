@@ -21,6 +21,7 @@ twox-hash.workspace = true
 ureq.workspace = true
 
 [dev-dependencies]
+roxmltree.workspace = true
 tempfile.workspace = true
 
 [lints]
