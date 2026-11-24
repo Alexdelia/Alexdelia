@@ -1,5 +1,10 @@
 owner = "Alexdelia"
-authors = []
+authors = [
+	"alexandre.delille.57@gmail.com",
+	"adelille@student.42.fr",
+	"alexandre@terros.io",
+	"alexandre.delille@cureety.com"
+]
 exclude_repos = []
 top_n = 8
 max_frames = 150
