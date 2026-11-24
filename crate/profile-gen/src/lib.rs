@@ -7,6 +7,7 @@ mod git;
 pub mod github;
 pub mod history;
 pub mod language;
+pub mod timeline;
 
 use clap::{Parser, Subcommand};
 
