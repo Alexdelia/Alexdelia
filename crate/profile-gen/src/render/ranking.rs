@@ -216,6 +216,8 @@ mod tests {
 				Frame {
 					week: start.saturating_add(Span::new().weeks(index)),
 					entries,
+					language_count: 0,
+					total_lines: 0,
 				}
 			})
 			.collect();

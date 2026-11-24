@@ -49,6 +49,19 @@ pub(super) const fn trend_word(direction: Direction) -> &'static str {
 	}
 }
 
+pub(super) fn totals_label(language_count: u32, total_lines: u64) -> String {
+	let languages = if language_count == 1 {
+		"language"
+	} else {
+		"languages"
+	};
+	let lines = if total_lines == 1 { "line" } else { "lines" };
+	format!(
+		"{language_count} {languages} - {} {lines}",
+		compact(total_lines)
+	)
+}
+
 pub(super) fn month(week: Week) -> String {
 	format!("{}-{:02}", week.year(), week.month())
 }
@@ -101,6 +114,13 @@ mod tests {
 	fn trend_words_name_each_direction() {
 		let word_list = [Direction::Up, Direction::Down, Direction::Flat].map(trend_word);
 		assert_eq!(word_list, ["up", "down", "flat"]);
+	}
+
+	#[test]
+	fn totals_read_as_languages_and_lines() {
+		assert_eq!(totals_label(21, 412_345), "21 languages - 412k lines");
+		assert_eq!(totals_label(1, 1), "1 language - 1 line");
+		assert_eq!(totals_label(0, 0), "0 languages - 0 lines");
 	}
 
 	#[test]

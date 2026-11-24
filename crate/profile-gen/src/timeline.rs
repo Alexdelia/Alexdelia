@@ -1,5 +1,5 @@
 use std::cmp::Reverse;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use jiff::Span;
 
@@ -57,6 +57,8 @@ pub struct Entry {
 pub struct Frame {
 	pub week: Week,
 	pub entries: Vec<Entry>,
+	pub language_count: u32,
+	pub total_lines: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -64,6 +66,11 @@ pub struct Timeline {
 	pub languages: Vec<LanguageSummary>,
 	pub frames: Vec<Frame>,
 	pub top_n: usize,
+}
+
+struct Totals {
+	language_count: u32,
+	total_lines: u64,
 }
 
 struct Series {
@@ -86,6 +93,7 @@ pub fn timeline(usage: &Usage, top_n: usize, max_frames: usize) -> Timeline {
 		.collect();
 	let shown = within_top_n_somewhere(&known, &known_cumulative, &frame_indices, top_n);
 	let all_cumulative = cumulative(&all_weekly(usage, &weeks));
+	let first_code_list = first_code_indices(usage, &weeks);
 	let series_list: Vec<&Series> = shown.iter().map(|index| &known[*index]).collect();
 	let languages: Vec<LanguageSummary> = series_list
 		.iter()
@@ -98,8 +106,14 @@ pub fn timeline(usage: &Usage, top_n: usize, max_frames: usize) -> Timeline {
 				.iter()
 				.map(|known_index| known_cumulative[*known_index][index])
 				.collect();
-			let hidden = all_cumulative[index] - lines.iter().sum::<u64>();
-			frame(weeks[index], &lines, hidden, &series_list, &languages)
+			let totals = Totals {
+				language_count: u32::try_from(
+					first_code_list.partition_point(|first| *first <= index),
+				)
+				.unwrap_or(u32::MAX),
+				total_lines: all_cumulative[index],
+			};
+			frame(weeks[index], &lines, &totals, &series_list, &languages)
 		})
 		.collect();
 	Timeline {
@@ -175,6 +189,19 @@ fn all_weekly(usage: &Usage, weeks: &[Week]) -> Vec<u64> {
 		.collect()
 }
 
+fn first_code_indices(usage: &Usage, weeks: &[Week]) -> Vec<usize> {
+	let mut first_by_name: BTreeMap<&'static str, usize> = BTreeMap::new();
+	for (index, week) in weeks.iter().enumerate() {
+		let added = usage.weeks.get(week).into_iter().flatten();
+		for (name, _) in added.filter(|(_, lines)| **lines > 0) {
+			first_by_name.entry(name).or_insert(index);
+		}
+	}
+	let mut first_list: Vec<usize> = first_by_name.into_values().collect();
+	first_list.sort_unstable();
+	first_list
+}
+
 fn within_top_n_somewhere(
 	known: &[Series],
 	known_cumulative: &[Vec<u64>],
@@ -241,13 +268,13 @@ fn sample_indices(count: usize, max_frames: usize) -> Vec<usize> {
 fn frame(
 	week: Week,
 	lines: &[u64],
-	hidden: u64,
+	totals: &Totals,
 	series_list: &[&Series],
 	languages: &[LanguageSummary],
 ) -> Frame {
 	let present: Vec<usize> = (0..lines.len()).filter(|index| lines[*index] > 0).collect();
 	let mut counted: Vec<u64> = present.iter().map(|index| lines[*index]).collect();
-	counted.push(hidden);
+	counted.push(totals.total_lines - lines.iter().sum::<u64>());
 	let mut entries: Vec<Entry> = present
 		.iter()
 		.zip(shares(&counted))
@@ -269,7 +296,12 @@ fn frame(
 			languages[entry.language].language.name,
 		)
 	});
-	Frame { week, entries }
+	Frame {
+		week,
+		entries,
+		language_count: totals.language_count,
+		total_lines: totals.total_lines,
+	}
 }
 
 fn shares(lines: &[u64]) -> Vec<u32> {
@@ -572,6 +604,67 @@ mod tests {
 		let result = timeline(&usage, 1, 100);
 		assert_eq!(names(&result), ["Rust"]);
 		assert_eq!(share_of(&result, 0, "Rust"), Some(909));
+	}
+
+	fn totals(timeline: &Timeline) -> Vec<(u32, u64)> {
+		timeline
+			.frames
+			.iter()
+			.map(|frame| (frame.language_count, frame.total_lines))
+			.collect()
+	}
+
+	#[test]
+	fn totals_count_every_language_with_code_including_hidden() {
+		let result = timeline(&five_languages(), 3, 100);
+		assert_eq!(names(&result).len(), 3);
+		assert_eq!(totals(&result), [(3, 1200), (4, 1300), (5, 1500)]);
+		let unknown = usage(&[(0, "Rust", 10), (1, "Unknown", 100)], &[]);
+		assert_eq!(totals(&timeline(&unknown, 1, 100)), [(1, 10), (2, 110)]);
+	}
+
+	#[test]
+	fn totals_hold_through_gap_weeks() {
+		let usage = usage(&[(0, "Rust", 10), (3, "C", 5), (3, "Rust", 0)], &[]);
+		assert_eq!(
+			totals(&timeline(&usage, 10, 100)),
+			[(1, 10), (1, 10), (1, 10), (2, 15)]
+		);
+	}
+
+	#[test]
+	fn resampled_totals_match_their_week() {
+		let added: Vec<(i64, &'static str, u64)> = (0..340)
+			.flat_map(|index| {
+				let late = if index >= 200 {
+					vec![(index, "Go", 3)]
+				} else {
+					Vec::new()
+				};
+				std::iter::once((index, "Rust", 1 + u64::try_from(index % 7).unwrap()))
+					.chain(late)
+					.chain((index == 100).then_some((index, "Unknown", 50)))
+			})
+			.collect();
+		let usage = usage(&added, &[]);
+		let every_week = timeline(&usage, 1, 1000);
+		let sampled = timeline(&usage, 1, 150);
+		assert_eq!(sampled.frames.len(), 150);
+		for frame in &sampled.frames {
+			let same_week = every_week
+				.frames
+				.iter()
+				.find(|full| full.week == frame.week)
+				.unwrap();
+			assert_eq!(
+				(frame.language_count, frame.total_lines),
+				(same_week.language_count, same_week.total_lines)
+			);
+		}
+		let last = sampled.frames.last().unwrap();
+		assert_eq!(last.language_count, 3);
+		let shown: u64 = last.entries.iter().map(|entry| entry.lines).sum();
+		assert!(last.total_lines > shown);
 	}
 
 	#[test]

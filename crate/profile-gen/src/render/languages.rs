@@ -1,13 +1,14 @@
 use super::clock::{Clock, race_ms};
 use super::format::{
-	animate, animate_transform, arrow, compact, escape, float, month, num, percent, trend_word,
+	animate, animate_transform, arrow, compact, escape, float, month, num, percent, totals_label,
+	trend_word,
 };
 use super::ranking::{Cell, cell_at, grid, settle};
 use super::ticker::{Row, ticker};
 use crate::icons::icon_path;
 use crate::language::Language;
 use crate::theme::{FONT_STACK, Palette, Variant, palette};
-use crate::timeline::{LanguageSummary, Timeline};
+use crate::timeline::{Frame, LanguageSummary, Timeline};
 
 const WIDTH: f64 = 880.0;
 const HEIGHT: f64 = 432.0;
@@ -19,7 +20,6 @@ const RIGHT_MARGIN: f64 = 8.0;
 const USABLE_WIDTH: f64 = WIDTH - GUTTER - RIGHT_MARGIN;
 const MAX_SLOT: f64 = 64.0;
 const BAR_RATIO: f64 = 0.72;
-const GHOST_OPACITY: &str = ".22";
 const TOP_RADIUS: f64 = 2.0;
 const LABEL_PAD: f64 = 4.0;
 const HEADER_GAP: f64 = 4.0;
@@ -51,7 +51,6 @@ const DARK_INK_THRESHOLD: u32 = 150_000;
 const BUILD_MS: f64 = 600.0;
 const FALL_MS: f64 = 450.0;
 const FADE_MS: f64 = 250.0;
-const GROW_MS: f64 = 450.0;
 const SINK_MS: f64 = 120.0;
 const DROP_BUDGET: u64 = 48;
 
@@ -68,6 +67,8 @@ const ROW_STEP: f64 = 16.0;
 const DATE_X: f64 = WIDTH - 8.0;
 const DATE_ROW: f64 = 72.0;
 const DATE_STEP: f64 = 20.0;
+const TOTALS_ROW: f64 = DATE_ROW + 18.0;
+const TOTALS_STEP: f64 = 16.0;
 
 #[must_use]
 pub fn render_languages(timeline: &Timeline, variant: Variant, seconds_per_year: f64) -> String {
@@ -89,7 +90,7 @@ pub fn render_languages(timeline: &Timeline, variant: Variant, seconds_per_year:
 			.map(|lane| column(lane, &race))
 			.collect::<Vec<_>>()
 			.concat(),
-		date_ticker(timeline, &race.clock),
+		date_and_totals(timeline, &race.clock),
 		"</svg>".to_owned(),
 	]
 	.concat()
@@ -137,7 +138,6 @@ struct Lane<'a> {
 	x: Vec<f64>,
 	height: Vec<f64>,
 	shown: Vec<bool>,
-	appear_tick: usize,
 }
 
 impl Lane<'_> {
@@ -157,7 +157,6 @@ impl Lane<'_> {
 struct Race<'a> {
 	clock: Clock,
 	layout: Layout,
-	top_lines: u64,
 	lanes: Vec<Lane<'a>>,
 }
 
@@ -189,7 +188,6 @@ impl<'a> Race<'a> {
 		Self {
 			clock,
 			layout,
-			top_lines,
 			lanes,
 		}
 	}
@@ -231,18 +229,12 @@ fn lane<'a>(
 	let shown = (0..clock.ticks())
 		.map(|tick| cell_at(&cells, clock.frame_of(tick)).visible)
 		.collect();
-	let appear_tick = if first_visible == 0 {
-		0
-	} else {
-		clock.lead + first_visible
-	};
 	Lane {
 		index,
 		summary,
 		x: settle(&target_list, f64::from(clock.tick_ms)),
 		height,
 		shown,
-		appear_tick,
 		cells,
 	}
 }
@@ -260,6 +252,7 @@ fn header(timeline: &Timeline, race: &Race, colors: Palette) -> String {
 			".m text,text.m{{font-size:10px;fill:{muted}}}",
 			".h text{{text-anchor:end}}",
 			".d text{{font-size:13px;text-anchor:end;fill:{muted}}}",
+			".d .c{{font-size:11px}}",
 			".t{{font-size:11px;font-weight:700}}",
 			"</style>",
 		),
@@ -320,6 +313,7 @@ fn defs(race: &Race, colors: Palette) -> String {
 			"<clipPath id=\"cb\"><rect width=\"{w}\" height=\"{belt_h}\">{grow}</rect></clipPath>",
 			"{share}{lines}{repos}",
 			"<clipPath id=\"cd\"><rect x=\"{date_x}\" y=\"{date_y}\" width=\"140\" height=\"18\"/></clipPath>",
+			"<clipPath id=\"ct\"><rect x=\"{totals_x}\" y=\"{totals_y}\" width=\"220\" height=\"15\"/></clipPath>",
 			"{tokens}",
 			"</defs>",
 		),
@@ -333,6 +327,8 @@ fn defs(race: &Race, colors: Palette) -> String {
 		repos = clip("cr", half, REPOS_ROW - 10.5, 13.5),
 		date_x = num(-140.0, 1),
 		date_y = num(DATE_ROW - 14.0, 1),
+		totals_x = num(-220.0, 1),
+		totals_y = num(TOTALS_ROW - 12.0, 1),
 		tokens = tokens.concat(),
 	)
 }
@@ -462,30 +458,19 @@ fn column(lane: &Lane, race: &Race) -> String {
 	let clock = &race.clock;
 	let duration = clock.duration();
 	let width = race.layout.bar_width();
-	let ghost_height = bar_height(lane.last().lines, race.top_lines) + TOP_RADIUS;
 	let x_list: Vec<String> = lane.x.iter().map(|x| num(*x, 1)).collect();
 	let height_list: Vec<String> = lane
 		.height
 		.iter()
 		.map(|height| num(height + TOP_RADIUS, 1))
 		.collect();
-	let appear_ms = clock.ms(lane.appear_tick);
 	let name = escape(lane.name());
 	let trend = lane.summary.trend;
-	let bar_shape = format!(
-		"x=\"{}\" width=\"{}\" rx=\"{}\" fill=\"{}\" transform=\"matrix(1 0 0 -1 0 {})\"",
-		num(-width / 2.0, 1),
-		num(width, 1),
-		num(TOP_RADIUS, 1),
-		lane.summary.language.color,
-		num(GROUND + TOP_RADIUS, 1),
-	);
 	format!(
 		concat!(
 			"<g data-column=\"{name}\" transform=\"translate({x})\"{hidden}>{slide}{fade}",
 			"<g clip-path=\"url(#k)\">",
-			"<rect data-ghost=\"{name}\" {shape} height=\"{ghost_height}\" opacity=\"{opacity}\">{ghost_growth}</rect>",
-			"<rect data-bar=\"{name}\" {shape} height=\"{height}\">{grow}</rect>",
+			"<rect data-bar=\"{name}\" x=\"{left}\" width=\"{width}\" rx=\"{radius}\" fill=\"{color}\" transform=\"matrix(1 0 0 -1 0 {base})\" height=\"{height}\">{grow}</rect>",
 			"</g>",
 			"<use href=\"#i{index}\" y=\"{token_y}\"/>",
 			"{name_label}{legend}{since}{trend}",
@@ -500,10 +485,11 @@ fn column(lane: &Lane, race: &Race) -> String {
 		},
 		slide = animate_transform("translate", &x_list.join(";"), duration),
 		fade = fade(&lane.shown, clock),
-		shape = bar_shape,
-		ghost_height = num(ghost_height, 1),
-		opacity = GHOST_OPACITY,
-		ghost_growth = grow_in(&num(ghost_height, 1), appear_ms),
+		left = num(-width / 2.0, 1),
+		width = num(width, 1),
+		radius = num(TOP_RADIUS, 1),
+		color = lane.summary.language.color,
+		base = num(GROUND + TOP_RADIUS, 1),
 		height = height_list.last().cloned().unwrap_or_default(),
 		grow = animate("height", &height_list.join(";"), duration),
 		index = lane.index,
@@ -588,17 +574,6 @@ fn headers(race: &Race) -> String {
 		.map(|(header, y)| format!("<text x=\"{x}\" y=\"{}\">{header}</text>", num(y, 1)))
 		.collect();
 	format!("<g class=\"m h\">{}</g>", text_list.concat())
-}
-
-fn grow_in(full_height: &str, appear_ms: f64) -> String {
-	if appear_ms <= 0.0 {
-		return String::new();
-	}
-	format!(
-		"<animate attributeName=\"height\" values=\"0;0;{full_height}\" keyTimes=\"0;{};1\" dur=\"{}ms\" fill=\"freeze\"/>",
-		num(appear_ms / (appear_ms + GROW_MS), 4),
-		num(appear_ms + GROW_MS, 0),
-	)
 }
 
 fn label(y: f64, class: &str, content: &str) -> String {
@@ -739,27 +714,43 @@ fn logo(drop: &Drop) -> String {
 	)
 }
 
-fn date_ticker(timeline: &Timeline, clock: &Clock) -> String {
-	let state_list = clock
+fn date_and_totals(timeline: &Timeline, clock: &Clock) -> String {
+	let frame_list: Vec<Option<&Frame>> = clock
 		.state_ticks()
 		.into_iter()
-		.map(|tick| {
-			timeline
-				.frames
-				.get(clock.frame_of(tick))
-				.map_or_else(String::new, |frame| month(frame.week))
-		})
+		.map(|tick| timeline.frames.get(clock.frame_of(tick)))
 		.collect();
-	let row = Row {
+	let state_list = |label: fn(&Frame) -> String| -> Vec<String> {
+		frame_list
+			.iter()
+			.map(|frame| frame.map_or_else(String::new, label))
+			.collect()
+	};
+	let date = Row {
 		clip: "cd",
 		class: "d",
 		y: DATE_ROW,
 		step: DATE_STEP,
 	};
+	let totals = Row {
+		clip: "ct",
+		class: "c",
+		y: TOTALS_ROW,
+		step: TOTALS_STEP,
+	};
 	format!(
-		"<g class=\"d\" transform=\"translate({} 0)\">{}</g>",
+		"<g class=\"d\" transform=\"translate({} 0)\">{}{}</g>",
 		num(DATE_X, 1),
-		ticker(state_list, row, clock.duration())
+		ticker(
+			state_list(|frame| month(frame.week)),
+			date,
+			clock.duration()
+		),
+		ticker(
+			state_list(|frame| totals_label(frame.language_count, frame.total_lines)),
+			totals,
+			clock.duration()
+		),
 	)
 }
 
@@ -925,10 +916,6 @@ mod tests {
 			.collect()
 	}
 
-	fn ghost_rect<'a>(document: &'a Document, name: &str) -> Node<'a, 'a> {
-		tagged(document, "data-ghost", name)
-	}
-
 	fn column<'a>(document: &'a Document, name: &str) -> Node<'a, 'a> {
 		tagged(document, "data-column", name)
 	}
@@ -1050,6 +1037,8 @@ mod tests {
 					share_bp: 10_000,
 					repos: 1,
 				}],
+				language_count: 1,
+				total_lines: 10,
 			}],
 			top_n: 2,
 		}
@@ -1127,26 +1116,43 @@ mod tests {
 	}
 
 	#[test]
-	fn has_ghost_bar_per_language_at_final_lines() {
+	fn final_bars_follow_the_sqrt_scale_in_final_order() {
 		let svg = render_languages(&fixture(), Variant::Dark, PACE);
 		let document = Document::parse(&svg).unwrap();
-		let mut ghost_list: Vec<(f64, &str, f64)> = FINAL_ORDER
+		let mut bar_list: Vec<(f64, &str, f64)> = FINAL_ORDER
 			.iter()
 			.map(|name| {
-				let rect = ghost_rect(&document, name);
+				let rect = tagged(&document, "data-bar", name);
 				let height = number(rect, "height") - TOP_RADIUS;
 				(column_x(&document, name), *name, height)
 			})
 			.collect();
-		ghost_list.sort_by(|left, right| left.0.total_cmp(&right.0));
-		let order: Vec<&str> = ghost_list.iter().map(|ghost| ghost.1).collect();
+		bar_list.sort_by(|left, right| left.0.total_cmp(&right.0));
+		let order: Vec<&str> = bar_list.iter().map(|bar| bar.1).collect();
 		assert_eq!(order, FINAL_ORDER);
-		let ratio = ghost_list[0].2 / FINAL_LINES[0].sqrt();
-		for (ghost, lines) in ghost_list.iter().zip(FINAL_LINES) {
-			let relative = (ghost.2 / lines.sqrt() - ratio).abs() / ratio;
-			assert!(relative < 5e-3, "{ghost:?}");
+		assert!((bar_list[0].2 - CHART_HEIGHT).abs() < 0.01);
+		let ratio = CHART_HEIGHT / FINAL_LINES[0].sqrt();
+		for (bar, lines) in bar_list.iter().zip(FINAL_LINES) {
+			let relative = (bar.2 / lines.sqrt() - ratio).abs() / ratio;
+			assert!(relative < 5e-3, "{bar:?}");
 		}
-		assert!(shows_from_start(ghost_rect(&document, "Rust")));
+		assert!(shows_from_start(tagged(&document, "data-bar", "Rust")));
+	}
+
+	#[test]
+	fn each_column_draws_only_its_live_bar() {
+		let svg = render_languages(&fixture(), Variant::Dark, PACE);
+		assert!(!svg.contains("data-ghost"));
+		let document = Document::parse(&svg).unwrap();
+		for name in FINAL_ORDER.iter().chain(&HIDDEN_AT_END) {
+			let rect_list: Vec<Node> = column(&document, name)
+				.descendants()
+				.filter(|node| node.has_tag_name("rect"))
+				.collect();
+			assert_eq!(rect_list.len(), 1, "{name}");
+			assert_eq!(rect_list[0].attribute("data-bar"), Some(*name));
+			assert_eq!(rect_list[0].attribute("opacity"), None, "{name}");
+		}
 	}
 
 	#[test]
@@ -1158,29 +1164,25 @@ mod tests {
 		let document = Document::parse(&svg).unwrap();
 		let radius = num(TOP_RADIUS, 1);
 		for name in FINAL_ORDER {
-			for rect in [
-				tagged(&document, "data-bar", name),
-				ghost_rect(&document, name),
-			] {
-				assert!(rect.has_tag_name("rect"), "{name}");
-				assert_eq!(rect.attribute("rx"), Some(radius.as_str()), "{name}");
-				let clip = rect
-					.ancestors()
-					.find_map(|node| node.attribute("clip-path"))
-					.unwrap();
-				let id = clip.trim_start_matches("url(#").trim_end_matches(')');
-				let clip_rect = tagged(&document, "id", id).first_element_child().unwrap();
-				let top = clip_rect.attribute("y").map_or(0.0, |y| y.parse().unwrap());
-				let bottom = top + number(clip_rect, "height");
-				assert!((bottom - GROUND).abs() < 0.01, "{name} {bottom}");
-			}
+			let rect = tagged(&document, "data-bar", name);
+			assert!(rect.has_tag_name("rect"), "{name}");
+			assert_eq!(rect.attribute("rx"), Some(radius.as_str()), "{name}");
+			let clip = rect
+				.ancestors()
+				.find_map(|node| node.attribute("clip-path"))
+				.unwrap();
+			let id = clip.trim_start_matches("url(#").trim_end_matches(')');
+			let clip_rect = tagged(&document, "id", id).first_element_child().unwrap();
+			let top = clip_rect.attribute("y").map_or(0.0, |y| y.parse().unwrap());
+			let bottom = top + number(clip_rect, "height");
+			assert!((bottom - GROUND).abs() < 0.01, "{name} {bottom}");
 		}
 		let rust = height_list(&document, "Rust");
 		assert!((rust[0] - TOP_RADIUS).abs() < 0.01, "{}", rust[0]);
 	}
 
 	#[test]
-	fn ghost_labels_visible_from_first_frame() {
+	fn legend_visible_from_first_frame() {
 		let svg = render_languages(&fixture(), Variant::Dark, PACE);
 		let document = Document::parse(&svg).unwrap();
 		for name in ["Rust", "C"] {
@@ -1223,16 +1225,6 @@ mod tests {
 					.iter()
 					.all(|x| (*x - x_list[entry_tick]).abs() < 0.01),
 				"{name}"
-			);
-			let ghost_growth = ghost_rect(&document, name)
-				.children()
-				.find(|child| child.attribute("attributeName") == Some("height"))
-				.unwrap();
-			assert!(
-				ghost_growth
-					.attribute("values")
-					.unwrap()
-					.starts_with("0;0;")
 			);
 		}
 		assert!(first_rise_ms(column(&document, "Python")).is_some());
@@ -1318,11 +1310,7 @@ mod tests {
 				.descendants()
 				.find(|node| node.has_tag_name("text") && node.text() == Some(name))
 				.unwrap();
-			let member_list = [
-				ghost_rect(&document, name),
-				tagged(&document, "data-bar", name),
-				name_text,
-			];
+			let member_list = [tagged(&document, "data-bar", name), name_text];
 			for member in member_list {
 				let mover = member.ancestors().find(|node| has_slide(*node)).unwrap();
 				assert_eq!(mover, column, "{name}");
@@ -1344,8 +1332,11 @@ mod tests {
 		for name in FINAL_ORDER {
 			let heights = height_list(&document, name);
 			assert!(heights.windows(2).all(|pair| pair[0] <= pair[1]), "{name}");
-			let ghost = number(ghost_rect(&document, name), "height");
-			assert!((heights.last().unwrap() - ghost).abs() < 0.1, "{name}");
+			let final_height = number(tagged(&document, "data-bar", name), "height");
+			assert!(
+				(heights.last().unwrap() - final_height).abs() < 0.1,
+				"{name}"
+			);
 		}
 		let python = height_list(&document, "Python");
 		let first_shown = python.iter().find(|height| **height > TOP_RADIUS).unwrap();
@@ -1417,6 +1408,39 @@ mod tests {
 		for header in HEADER_LIST {
 			let count = root.iter().filter(|text| *text == header).count();
 			assert_eq!(count, 1, "{header}");
+		}
+	}
+
+	#[test]
+	fn totals_tick_under_the_date_and_end_on_final_totals() {
+		let svg = render_languages(&fixture(), Variant::Dark, PACE);
+		let document = Document::parse(&svg).unwrap();
+		let root = document.root_element();
+		assert_eq!(shown_text(root, "cd", DATE_ROW), "2022-11");
+		assert_eq!(
+			shown_text(root, "ct", TOTALS_ROW),
+			"7 languages - 10k lines"
+		);
+		let totals = root
+			.descendants()
+			.find(|node| node.attribute("clip-path") == Some("url(#ct)"))
+			.unwrap();
+		let state_list = text_list(totals);
+		assert!(state_list.len() > 10, "{state_list:?}");
+		assert_eq!(state_list[0], "2 languages - 128 lines");
+		assert!(
+			state_list
+				.iter()
+				.any(|text| text.starts_with("5 languages"))
+		);
+		let date = root
+			.descendants()
+			.find(|node| node.attribute("clip-path") == Some("url(#cd)"))
+			.unwrap();
+		assert_eq!(totals.parent(), date.parent());
+		const {
+			assert!(TOTALS_ROW - DATE_ROW >= TOTALS_STEP);
+			assert!(TOTALS_ROW < GROUND - CHART_HEIGHT - TOP_RADIUS);
 		}
 	}
 
@@ -1507,7 +1531,6 @@ mod tests {
 			let name = summary.language.name;
 			let color = Some(summary.language.color);
 			assert_eq!(tagged(&document, "data-bar", name).attribute("fill"), color);
-			assert_eq!(ghost_rect(&document, name).attribute("fill"), color);
 		}
 		assert!(svg.contains("#3572A5"));
 	}
@@ -1735,7 +1758,7 @@ mod tests {
 		let svg = render_languages(&single(name), Variant::Light, PACE);
 		assert!(svg.is_ascii());
 		let document = Document::parse(&svg).unwrap();
-		for key in ["data-bar", "data-ghost", "data-column", "data-drop"] {
+		for key in ["data-bar", "data-column", "data-drop"] {
 			assert_eq!(tagged(&document, key, name).attribute(key), Some(name));
 		}
 		let texts = text_list(column(&document, name));
