@@ -29,11 +29,11 @@ pub(super) struct Clock {
 }
 
 impl Clock {
-	pub(super) fn new(frames: usize, race_ms: u32) -> Self {
+	pub(super) fn new(frames: usize, race_ms: u32, lead_ms: u32) -> Self {
 		let intervals = u32::try_from(frames.saturating_sub(1).max(1)).unwrap_or(u32::MAX);
 		let tick_ms = (race_ms.saturating_add(intervals / 2) / intervals).max(MIN_TICK_MS);
 		Self {
-			lead: ticks_within(LEAD_MS, tick_ms),
+			lead: ticks_within(lead_ms.max(LEAD_MS), tick_ms),
 			tick_ms,
 			frames,
 			tail: ticks_within(TAIL_MS, tick_ms),
@@ -44,12 +44,12 @@ impl Clock {
 		ticks_within(ms, self.tick_ms)
 	}
 
-	pub(super) const fn ticks(&self) -> usize {
-		self.lead + self.frames + self.tail
+	pub(super) fn lead_ms(&self) -> i64 {
+		i64::from(self.tick_ms) * i64::try_from(self.lead).unwrap_or(i64::MAX)
 	}
 
-	pub(super) const fn is_lead(&self, tick: usize) -> bool {
-		tick < self.lead
+	pub(super) const fn ticks(&self) -> usize {
+		self.lead + self.frames + self.tail
 	}
 
 	pub(super) fn frame_of(&self, tick: usize) -> usize {
@@ -129,7 +129,7 @@ mod tests {
 
 	#[test]
 	fn weekly_ticks_keep_the_race_length() {
-		let clock = Clock::new(314, 29_993);
+		let clock = Clock::new(314, 29_993, 0);
 		assert_eq!(clock.tick_ms, 96);
 		assert!(clock.ms(clock.lead) >= f64::from(LEAD_MS));
 		let race = clock.ms(clock.lead + 313) - clock.ms(clock.lead);
@@ -141,7 +141,7 @@ mod tests {
 	#[test]
 	fn short_or_empty_races_keep_a_bounded_tick() {
 		for (frames, race) in [(0, 0), (1, 0), (2, 0), (2, 96)] {
-			let clock = Clock::new(frames, race);
+			let clock = Clock::new(frames, race, 0);
 			assert!(clock.tick_ms >= MIN_TICK_MS, "{frames}");
 			assert!(clock.ticks() <= 200, "{frames}");
 			assert!(clock.duration() <= 3_000.0, "{frames}");
@@ -150,16 +150,28 @@ mod tests {
 	}
 
 	#[test]
+	fn lead_covers_the_requested_ms_in_whole_ticks() {
+		let short = Clock::new(314, 29_993, 0);
+		assert_eq!(short.ms(short.lead), 1_632.0);
+		assert_eq!(Clock::new(314, 29_993, 1_000).lead, short.lead);
+		let long = Clock::new(314, 29_993, 2_500);
+		assert_eq!(long.lead, 27);
+		assert!(long.ms(long.lead) >= 2_500.0 && long.ms(long.lead - 1) < 2_500.0);
+		assert_eq!(long.lead_ms(), 2_592);
+		assert_eq!(long.ticks(), short.ticks() + 10);
+	}
+
+	#[test]
 	fn label_states_follow_time_not_frames() {
-		let short = Clock::new(100, 10_000).state_ticks();
-		let long = Clock::new(314, 29_993).state_ticks();
+		let short = Clock::new(100, 10_000, 0).state_ticks();
+		let long = Clock::new(314, 29_993, 0).state_ticks();
 		assert!(
 			long.len() > short.len() * 2,
 			"{} {}",
 			long.len(),
 			short.len()
 		);
-		let clock = Clock::new(314, 29_993);
+		let clock = Clock::new(314, 29_993, 0);
 		let state_list = clock.state_ticks();
 		assert_eq!(state_list.first(), Some(&0));
 		assert_eq!(state_list.last(), Some(&(clock.ticks() - 1)));

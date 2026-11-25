@@ -247,7 +247,7 @@ mod tests {
 	}
 
 	fn clock_for(timeline: &Timeline) -> Clock {
-		Clock::new(timeline.frames.len(), race_ms(timeline, 5.0))
+		Clock::new(timeline.frames.len(), race_ms(timeline, 5.0), 0)
 	}
 
 	fn ranks(timeline: &Timeline, language: usize) -> Vec<usize> {

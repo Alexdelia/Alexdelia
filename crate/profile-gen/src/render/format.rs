@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::history::Week;
 use crate::timeline::Direction;
 
@@ -8,6 +10,48 @@ pub(super) fn num(value: f64, digits: i32) -> String {
 
 pub(super) fn float(value: impl TryInto<u32>) -> f64 {
 	f64::from(value.try_into().unwrap_or(u32::MAX))
+}
+
+pub(super) fn key_time(ms: f64, duration: f64) -> String {
+	let key = num(ms / duration, 5);
+	key.strip_prefix('0')
+		.filter(|fraction| fraction.starts_with('.'))
+		.map_or_else(|| key.clone(), str::to_owned)
+}
+
+pub(super) fn whole_ms(ms: f64) -> i64 {
+	Duration::try_from_secs_f64((ms + 0.5) / 1_000.0).map_or(0, |span| {
+		i64::try_from(span.as_millis()).unwrap_or(i64::MAX)
+	})
+}
+
+pub(super) fn discrete(
+	head: &str,
+	start: &str,
+	point_list: Vec<(u32, String)>,
+	duration: f64,
+) -> String {
+	let mut list: Vec<(u32, String)> = Vec::new();
+	for (ms, value) in point_list {
+		if list.last().is_some_and(|last| last.0 == ms) {
+			list.pop();
+		}
+		list.push((ms, value));
+	}
+	let mut value_list = vec![start.to_owned()];
+	let mut key_list = vec!["0".to_owned()];
+	for (ms, value) in list {
+		if value_list.last() != Some(&value) {
+			value_list.push(value);
+			key_list.push(key_time(f64::from(ms), duration));
+		}
+	}
+	format!(
+		"{head} calcMode=\"discrete\" values=\"{}\" keyTimes=\"{}\" dur=\"{}ms\" fill=\"freeze\"/>",
+		value_list.join(";"),
+		key_list.join(";"),
+		num(duration, 0),
+	)
 }
 
 pub(super) fn escape(text: &str) -> String {
@@ -108,6 +152,22 @@ mod tests {
 		assert_eq!(num(12.0, 1), "12");
 		assert_eq!(num(6.11372, 3), "6.114");
 		assert_eq!(float(u64::MAX), f64::from(u32::MAX));
+	}
+
+	#[test]
+	fn key_times_drop_the_leading_zero() {
+		assert_eq!(key_time(0.0, 1_000.0), "0");
+		assert_eq!(key_time(1_000.0, 1_000.0), "1");
+		assert_eq!(key_time(250.0, 1_000.0), ".25");
+		assert_eq!(key_time(1.0, 3_000.0), ".00033");
+	}
+
+	#[test]
+	fn whole_ms_rounds_and_floors_at_zero() {
+		assert_eq!(whole_ms(339.4), 339);
+		assert_eq!(whole_ms(339.5), 340);
+		assert_eq!(whole_ms(-5.0), 0);
+		assert_eq!(whole_ms(f64::NAN), 0);
 	}
 
 	#[test]

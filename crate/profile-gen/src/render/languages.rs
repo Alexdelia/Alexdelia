@@ -1,18 +1,21 @@
 use super::clock::{Clock, race_ms};
+use super::feed::{Feed, Shown, feed_list, growth, paired, shown_list, throw_list};
+use super::feeder::{Flight, TUBE_CAPACITY, Track, feeder, flight_ms};
 use super::format::{
-	animate, animate_transform, arrow, compact, escape, float, month, num, percent, totals_label,
-	trend_word,
+	animate, animate_transform, arrow, compact, discrete, escape, float, key_time, month, num,
+	percent, totals_label, trend_word,
 };
 use super::ranking::{Cell, cell_at, grid, settle};
+use super::schedule::{Shot, schedule};
 use super::ticker::{Row, ticker};
 use crate::icons::icon_path;
 use crate::language::Language;
 use crate::theme::{FONT_STACK, Palette, Variant, palette};
 use crate::timeline::{Frame, LanguageSummary, Timeline};
 
-const WIDTH: f64 = 880.0;
+pub(super) const WIDTH: f64 = 880.0;
 const HEIGHT: f64 = 432.0;
-const GROUND: f64 = 300.0;
+pub(super) const GROUND: f64 = 300.0;
 const CHART_HEIGHT: f64 = 196.0;
 const MIN_BAR_HEIGHT: f64 = 2.0;
 const GUTTER: f64 = 60.0;
@@ -27,32 +30,10 @@ const HEADER_LIST: [&str; 5] = ["share", "lines", "repos", "since", "past year"]
 const GLYPH_EM: f64 = 0.62;
 const NAME_FONT_PX: f64 = 10.0;
 
-const BELT_LEFT: f64 = -40.0;
-const BELT_RIGHT: f64 = 862.0;
-const BELT_TOP: f64 = 16.0;
-const BELT_THICKNESS: f64 = 14.0;
-const BELT_AXLE: f64 = BELT_TOP + BELT_THICKNESS / 2.0;
-const CLEAT_OFFSET: f64 = 1.5;
-const ROLLER_RADIUS: f64 = 4.5;
-const DRUM_RADIUS: f64 = 5.5;
-const ROLLER_FIRST: f64 = 24.0;
-const ROLLER_GAP: f64 = 56.0;
-const HANGER_LIST: [f64; 4] = [96.0, 330.0, 564.0, 798.0];
-const BELT_SPEED: f64 = 0.8;
-
 const TOKEN_RADIUS: f64 = 10.0;
-const RIDE_Y: f64 = BELT_TOP + BELT_THICKNESS + CLEAT_OFFSET + TOKEN_RADIUS;
-const SPAWN_X: f64 = -TOKEN_RADIUS - 4.0;
-const SINK_DEPTH: f64 = 2.0;
-const TOKEN_GAP: f64 = 4.0;
-const TOKEN_SPACING_MS: f64 = (TOKEN_RADIUS + TOKEN_RADIUS + TOKEN_GAP) / BELT_SPEED;
 const DARK_INK_THRESHOLD: u32 = 150_000;
-
-const BUILD_MS: f64 = 600.0;
-const FALL_MS: f64 = 450.0;
+const GROUND_DRAW_MS: f64 = 600.0;
 const FADE_MS: f64 = 250.0;
-const SINK_MS: f64 = 120.0;
-const DROP_BUDGET: u64 = 48;
 
 const TOKEN_ROW: f64 = GROUND + 24.0;
 const NAME_ROW: f64 = GROUND + 52.0;
@@ -77,14 +58,22 @@ pub fn render_languages(timeline: &Timeline, variant: Variant, seconds_per_year:
 	[
 		header(timeline, &race, colors),
 		defs(&race, colors),
-		belt(&race.clock, colors),
 		ground(colors),
 		headers(&race),
-		drop_list(&race)
-			.iter()
-			.map(logo)
-			.collect::<Vec<_>>()
-			.concat(),
+		feeder(
+			&race.flight_list,
+			&race
+				.lanes
+				.iter()
+				.map(|lane| Track {
+					lane: lane.index,
+					x_list: &lane.x,
+					tick_ms: race.clock.tick_ms,
+				})
+				.collect::<Vec<_>>(),
+			race.clock.duration(),
+			colors,
+		),
 		race.lanes
 			.iter()
 			.map(|lane| column(lane, &race))
@@ -136,8 +125,8 @@ struct Lane<'a> {
 	summary: &'a LanguageSummary,
 	cells: Vec<Cell>,
 	x: Vec<f64>,
-	height: Vec<f64>,
-	shown: Vec<bool>,
+	growth: Vec<(u32, f64)>,
+	shown: Vec<Shown>,
 }
 
 impl Lane<'_> {
@@ -152,12 +141,17 @@ impl Lane<'_> {
 	fn at(&self, tick: usize, clock: &Clock) -> Cell {
 		cell_at(&self.cells, clock.frame_of(tick))
 	}
+
+	fn final_height(&self) -> f64 {
+		self.growth.last().map_or(0.0, |(_, height)| *height)
+	}
 }
 
 struct Race<'a> {
 	clock: Clock,
 	layout: Layout,
 	lanes: Vec<Lane<'a>>,
+	flight_list: Vec<Flight>,
 }
 
 impl<'a> Race<'a> {
@@ -167,30 +161,68 @@ impl<'a> Race<'a> {
 		} else {
 			&timeline.languages
 		};
-		let clock = Clock::new(timeline.frames.len(), race_ms(timeline, seconds_per_year));
+		let frames = timeline.frames.len();
+		let race = race_ms(timeline, seconds_per_year);
+		let provisional = Clock::new(frames, race, 0);
+		let row_list = grid(timeline, &provisional);
 		let layout = Layout::new(languages.len().min(timeline.top_n));
-		let grid = grid(timeline, &clock);
-		let top_lines = grid
+		let top_lines = row_list
 			.iter()
 			.filter_map(|row| row.last())
 			.map(|cell| cell.lines)
 			.max()
 			.unwrap_or(0);
-		let lanes = languages
+		let feed_list = feed_list(&row_list);
+		let plan = schedule(
+			&throw_list(&feed_list, provisional.tick_ms, |feed| {
+				flight_ms(landing_y(feed.fed_before, top_lines))
+			}),
+			TUBE_CAPACITY,
+		);
+		let clock = Clock::new(frames, race, u32::try_from(-plan.start_ms()).unwrap_or(0));
+		let mut lanes: Vec<Lane> = languages
 			.iter()
-			.zip(grid)
+			.zip(row_list)
 			.enumerate()
-			.filter(|(_, (_, cells))| cells.iter().any(|cell| cell.visible))
-			.map(|(index, (summary, cells))| {
-				lane(index, summary, cells, &clock, &layout, top_lines)
-			})
+			.map(|(index, (summary, cells))| lane(index, summary, cells, &clock, &layout))
 			.collect();
+		let flight_list: Vec<Flight> = paired(&feed_list, &plan.shots)
+			.into_iter()
+			.map(|(feed, shot)| flight(feed, shot, &lanes[feed.lane], &clock))
+			.collect();
+		let cells_list: Vec<&[Cell]> = lanes.iter().map(|lane| lane.cells.as_slice()).collect();
+		let shown = shown_list(&cells_list, &flight_list, &clock);
+		for (lane, shown) in lanes.iter_mut().zip(shown) {
+			lane.growth = growth(lane.index, &lane.cells, &flight_list)
+				.into_iter()
+				.map(|(ms, lines)| (ms, bar_height(lines, top_lines)))
+				.collect();
+			lane.shown = shown;
+		}
+		lanes.retain(|lane| lane.cells.iter().any(|cell| cell.visible));
 		Self {
 			clock,
 			layout,
 			lanes,
+			flight_list,
 		}
 	}
+}
+
+fn flight(feed: &Feed, shot: &Shot, lane: &Lane, clock: &Clock) -> Flight {
+	let at = |ms: i64| u32::try_from(ms + clock.lead_ms()).unwrap_or(u32::MAX);
+	Flight {
+		lane: feed.lane,
+		name: lane.name(),
+		frame: feed.frame,
+		enter_ms: at(shot.enter_ms),
+		fire_ms: at(shot.fire_ms),
+		land_ms: at(shot.land_ms),
+	}
+}
+
+fn landing_y(fed_lines: u64, top_lines: u64) -> f64 {
+	GROUND - bar_height(fed_lines, top_lines) - TOKEN_RADIUS
 }
 
 fn bar_height(lines: u64, top_lines: u64) -> f64 {
@@ -207,7 +239,6 @@ fn lane<'a>(
 	cells: Vec<Cell>,
 	clock: &Clock,
 	layout: &Layout,
-	top_lines: u64,
 ) -> Lane<'a> {
 	let first_visible = cells.iter().position(|cell| cell.visible).unwrap_or(0);
 	let target_list: Vec<f64> = (0..clock.ticks())
@@ -216,25 +247,12 @@ fn lane<'a>(
 			layout.center(cell_at(&cells, frame).slot)
 		})
 		.collect();
-	let height = (0..clock.ticks())
-		.map(|tick| {
-			let lines = if clock.is_lead(tick) {
-				0
-			} else {
-				cell_at(&cells, clock.frame_of(tick)).lines
-			};
-			bar_height(lines, top_lines)
-		})
-		.collect();
-	let shown = (0..clock.ticks())
-		.map(|tick| cell_at(&cells, clock.frame_of(tick)).visible)
-		.collect();
 	Lane {
 		index,
 		summary,
 		x: settle(&target_list, f64::from(clock.tick_ms)),
-		height,
-		shown,
+		growth: Vec::new(),
+		shown: Vec::new(),
 		cells,
 	}
 }
@@ -291,7 +309,7 @@ fn description(timeline: &Timeline, race: &Race) -> String {
 		})
 		.collect();
 	format!(
-		"Share of lines added per language{period}, racing week by week, fed by a conveyor belt. Final: {}.",
+		"Share of lines added per language{period}, racing week by week, fed by a slingshot. Final: {}.",
 		summary.join("; ")
 	)
 }
@@ -310,7 +328,6 @@ fn defs(race: &Race, colors: Palette) -> String {
 			"<pattern id=\"h\" width=\"8\" height=\"6\" patternUnits=\"userSpaceOnUse\">",
 			"<path d=\"M8 0 2 6\" stroke=\"{ground}\"/>",
 			"</pattern>",
-			"<clipPath id=\"cb\"><rect width=\"{w}\" height=\"{belt_h}\">{grow}</rect></clipPath>",
 			"{share}{lines}{repos}",
 			"<clipPath id=\"cd\"><rect x=\"{date_x}\" y=\"{date_y}\" width=\"140\" height=\"18\"/></clipPath>",
 			"<clipPath id=\"ct\"><rect x=\"{totals_x}\" y=\"{totals_y}\" width=\"220\" height=\"15\"/></clipPath>",
@@ -319,9 +336,6 @@ fn defs(race: &Race, colors: Palette) -> String {
 		),
 		above_ground = clip("k", half, 0.0, GROUND),
 		ground = colors.ground,
-		w = WIDTH,
-		belt_h = num(BELT_TOP + BELT_THICKNESS + 4.0, 1),
-		grow = animate("width", &format!("0;{}", num(WIDTH, 0)), BUILD_MS),
 		share = clip("cs", half, SHARE_ROW - 12.0, 15.0),
 		lines = clip("cl", half, LINES_ROW - 10.5, 13.5),
 		repos = clip("cr", half, REPOS_ROW - 10.5, 13.5),
@@ -376,65 +390,6 @@ fn ink(color: &str) -> &'static str {
 	}
 }
 
-fn belt(clock: &Clock, colors: Palette) -> String {
-	let duration = clock.duration();
-	let travel = BELT_SPEED * duration;
-	let roller_list: Vec<String> =
-		std::iter::successors(Some(ROLLER_FIRST), |x| Some(x + ROLLER_GAP))
-			.take_while(|x| *x < BELT_RIGHT - BELT_THICKNESS)
-			.map(|x| roller(x, ROLLER_RADIUS, travel, duration))
-			.collect();
-	let hangers: Vec<String> = HANGER_LIST
-		.iter()
-		.map(|x| format!("M{} 0V{}", num(*x, 1), num(BELT_TOP, 1)))
-		.collect();
-	let cleat = |y: f64, shift: f64| {
-		format!(
-			"<path d=\"M{left} {y}H{right}\" stroke=\"{accent}\" stroke-width=\"3\" stroke-dasharray=\"2 10\">{motion}</path>",
-			left = num(BELT_LEFT, 1),
-			y = num(y, 1),
-			right = num(BELT_RIGHT, 1),
-			accent = colors.belt_accent,
-			motion = animate(
-				"stroke-dashoffset",
-				&format!("0;{}", num(shift, 0)),
-				duration
-			),
-		)
-	};
-	format!(
-		concat!(
-			"<g clip-path=\"url(#cb)\" fill=\"none\" stroke=\"{belt}\">",
-			"<path d=\"{hangers}\" stroke-width=\"1.5\"/>",
-			"<path d=\"M{left} {top}H{right}a{r} {r} 0 0 1 0 {thick}H{left}\" fill=\"{belt}\" fill-opacity=\".2\" stroke-width=\"2\"/>",
-			"{upper}{lower}{rollers}{drum}",
-			"</g>",
-		),
-		belt = colors.belt,
-		hangers = hangers.concat(),
-		left = num(BELT_LEFT, 1),
-		top = num(BELT_TOP, 1),
-		right = num(BELT_RIGHT, 1),
-		r = num(BELT_THICKNESS / 2.0, 1),
-		thick = num(BELT_THICKNESS, 1),
-		upper = cleat(BELT_TOP - CLEAT_OFFSET, travel),
-		lower = cleat(BELT_TOP + BELT_THICKNESS + CLEAT_OFFSET, -travel),
-		rollers = roller_list.concat(),
-		drum = roller(BELT_RIGHT, DRUM_RADIUS, travel, duration),
-	)
-}
-
-fn roller(x: f64, radius: f64, travel: f64, duration: f64) -> String {
-	let turn = (-travel / radius).to_degrees();
-	format!(
-		"<g transform=\"translate({} {})\"><g>{}<circle r=\"{r}\"/><path d=\"M-{r} 0H{r}M0-{r}V{r}\"/></g></g>",
-		num(x, 1),
-		num(BELT_AXLE, 1),
-		animate_transform("rotate", &format!("0;{}", num(turn, 0)), duration),
-		r = num(radius, 1),
-	)
-}
-
 fn ground(colors: Palette) -> String {
 	format!(
 		concat!(
@@ -447,10 +402,10 @@ fn ground(colors: Palette) -> String {
 		draw = animate(
 			"stroke-dashoffset",
 			&format!("{};0", num(WIDTH, 0)),
-			BUILD_MS
+			GROUND_DRAW_MS
 		),
 		hatch = num(GROUND + 1.0, 1),
-		grow = animate("width", &format!("0;{}", num(WIDTH, 0)), BUILD_MS),
+		grow = animate("width", &format!("0;{}", num(WIDTH, 0)), GROUND_DRAW_MS),
 	)
 }
 
@@ -459,11 +414,6 @@ fn column(lane: &Lane, race: &Race) -> String {
 	let duration = clock.duration();
 	let width = race.layout.bar_width();
 	let x_list: Vec<String> = lane.x.iter().map(|x| num(*x, 1)).collect();
-	let height_list: Vec<String> = lane
-		.height
-		.iter()
-		.map(|height| num(height + TOP_RADIUS, 1))
-		.collect();
 	let name = escape(lane.name());
 	let trend = lane.summary.trend;
 	format!(
@@ -484,14 +434,14 @@ fn column(lane: &Lane, race: &Race) -> String {
 			" opacity=\"0\""
 		},
 		slide = animate_transform("translate", &x_list.join(";"), duration),
-		fade = fade(&lane.shown, clock),
+		fade = fade(&lane.shown, duration),
 		left = num(-width / 2.0, 1),
 		width = num(width, 1),
 		radius = num(TOP_RADIUS, 1),
 		color = lane.summary.language.color,
 		base = num(GROUND + TOP_RADIUS, 1),
-		height = height_list.last().cloned().unwrap_or_default(),
-		grow = animate("height", &height_list.join(";"), duration),
+		height = num(lane.final_height() + TOP_RADIUS, 1),
+		grow = growth_animation(lane, duration),
 		index = lane.index,
 		token_y = num(TOKEN_ROW, 1),
 		name_label = name_label(lane.name(), race.layout.label_room()),
@@ -505,39 +455,52 @@ fn column(lane: &Lane, race: &Race) -> String {
 	)
 }
 
-fn fade(shown: &[bool], clock: &Clock) -> String {
-	let duration = clock.duration();
-	let opacity = |visible: bool| if visible { "1" } else { "0" };
-	let mut point_list: Vec<(f64, bool)> = shown
-		.first()
-		.map(|first| (0.0, *first))
-		.into_iter()
-		.collect();
-	for (tick, pair) in (1..).zip(shown.windows(2)) {
-		if pair[0] == pair[1] {
-			continue;
+fn growth_animation(lane: &Lane, duration: f64) -> String {
+	discrete(
+		"<animate attributeName=\"height\"",
+		&num(TOP_RADIUS, 1),
+		lane.growth
+			.iter()
+			.map(|(ms, height)| (*ms, num(height + TOP_RADIUS, 1)))
+			.collect(),
+		duration,
+	)
+}
+
+fn fade(shown: &[Shown], duration: f64) -> String {
+	let mut merged: Vec<Shown> = Vec::new();
+	for run in shown {
+		let off = run.off.map(|off| off.max(run.on + FADE_MS));
+		match merged.last_mut() {
+			Some(last) if last.off.is_some_and(|last_off| run.on < last_off + FADE_MS) => {
+				last.off = off;
+			}
+			_ => merged.push(Shown { on: run.on, off }),
 		}
-		let start = clock.ms(tick);
-		let fading = point_list.len() > 1 && point_list.last().is_some_and(|end| end.0 > start);
-		if fading {
-			point_list.truncate(point_list.len() - 2);
-		} else {
-			point_list.push((start, pair[0]));
-			point_list.push(((start + FADE_MS).min(duration), pair[1]));
+	}
+	let mut point_list: Vec<(f64, bool)> =
+		vec![(0.0, merged.first().is_some_and(|first| first.on <= 0.0))];
+	for run in &merged {
+		if run.on > 0.0 {
+			point_list.extend([(run.on, false), (run.on + FADE_MS, true)]);
+		}
+		if let Some(off) = run.off {
+			point_list.extend([(off, true), (off + FADE_MS, false)]);
 		}
 	}
 	if point_list.len() < 2 {
 		return String::new();
 	}
+	let opacity = |visible: &bool| if *visible { "1" } else { "0" };
 	let key_list: Vec<String> = point_list
 		.iter()
-		.map(|(ms, _)| num(ms / duration, 4))
+		.map(|(ms, _)| key_time(ms.min(duration), duration))
 		.chain(["1".to_owned()])
 		.collect();
 	let value_list: Vec<&str> = point_list
 		.iter()
-		.map(|(_, visible)| opacity(*visible))
-		.chain(point_list.last().map(|(_, visible)| opacity(*visible)))
+		.map(|(_, visible)| opacity(visible))
+		.chain(point_list.last().map(|(_, visible)| opacity(visible)))
 		.collect();
 	format!(
 		"<animate attributeName=\"opacity\" values=\"{}\" keyTimes=\"{}\" dur=\"{}ms\" fill=\"freeze\"/>",
@@ -629,91 +592,6 @@ fn legend(lane: &Lane, clock: &Clock) -> String {
 	[share, lines, repos].concat()
 }
 
-struct Drop<'a> {
-	lane: &'a Lane<'a>,
-	tick: usize,
-	begin: f64,
-}
-
-fn drop_list<'a>(race: &'a Race) -> Vec<Drop<'a>> {
-	let total: u64 = race.lanes.iter().map(|lane| lane.last().lines).sum();
-	let mut list: Vec<Drop> = race
-		.lanes
-		.iter()
-		.flat_map(|lane| {
-			growth_frames(lane, total)
-				.into_iter()
-				.filter(|frame| cell_at(&lane.cells, *frame).visible)
-				.map(|frame| race.clock.lead + frame)
-				.map(move |tick| Drop {
-					lane,
-					tick,
-					begin: race.clock.ms(tick) - trip_ms(lane.x[tick]),
-				})
-		})
-		.collect();
-	list.sort_by(|left, right| left.begin.total_cmp(&right.begin));
-	let mut free = 0.0;
-	for drop in &mut list {
-		drop.begin = drop.begin.max(free);
-		free = drop.begin + TOKEN_SPACING_MS;
-	}
-	list
-}
-
-fn growth_frames(lane: &Lane, total: u64) -> Vec<usize> {
-	let lines = lane.last().lines;
-	let quota = ((DROP_BUDGET * lines + total / 2) / total.max(1)).max(u64::from(lines > 0));
-	let mut frame_list: Vec<usize> = (0..quota)
-		.map(|step| {
-			let threshold = ((2 * step + 1) * lines).div_ceil(2 * quota);
-			lane.cells.partition_point(|cell| cell.lines < threshold)
-		})
-		.collect();
-	frame_list.dedup();
-	frame_list
-}
-
-fn ride_ms(x: f64) -> f64 {
-	(x - SPAWN_X) / BELT_SPEED
-}
-
-fn trip_ms(x: f64) -> f64 {
-	ride_ms(x) + FALL_MS
-}
-
-fn logo(drop: &Drop) -> String {
-	let lane = drop.lane;
-	let x = lane.x[drop.tick];
-	let landing_y = GROUND - lane.height[drop.tick] + SINK_DEPTH;
-	let duration = trip_ms(x);
-	let begin = drop.begin;
-	let timing = format!(
-		"begin=\"{}ms\" dur=\"{}ms\"",
-		num(begin, 0),
-		num(duration, 0)
-	);
-	format!(
-		concat!(
-			"<use href=\"#i{index}\" data-drop=\"{name}\" opacity=\"0\">",
-			"<animate attributeName=\"opacity\" values=\"1;1;0\" keyTimes=\"0;{fade};1\" {timing} fill=\"freeze\"/>",
-			"<animateTransform attributeName=\"transform\" type=\"translate\" calcMode=\"spline\" ",
-			"keyTimes=\"0;{ride};1\" keySplines=\"0 0 1 1;.55 0 1 1\" ",
-			"values=\"{spawn} {ride_y};{x} {ride_y};{x} {land}\" {timing}/>",
-			"</use>",
-		),
-		index = lane.index,
-		name = escape(lane.name()),
-		fade = num((duration - SINK_MS) / duration, 4),
-		ride = num(ride_ms(x) / duration, 4),
-		spawn = num(SPAWN_X, 1),
-		ride_y = num(RIDE_Y, 1),
-		x = num(x, 1),
-		land = num(landing_y, 1),
-		timing = timing,
-	)
-}
-
 fn date_and_totals(timeline: &Timeline, clock: &Clock) -> String {
 	let frame_list: Vec<Option<&Frame>> = clock
 		.state_ticks()
@@ -759,6 +637,7 @@ mod tests {
 	use super::super::ranking::grid;
 	use super::*;
 	use crate::cache::Usage;
+	use crate::config::MIN_SECONDS_PER_YEAR;
 	use crate::history::Week;
 	use crate::theme::{Palette, palette};
 	use crate::timeline::{Entry, Frame, Trend, timeline};
@@ -861,10 +740,6 @@ mod tests {
 
 	fn value_width(text: &str) -> f64 {
 		float(text.chars().count()) * GLYPH_EM * VALUE_FONT_PX
-	}
-
-	fn clock_of(data: &Timeline) -> Clock {
-		Clock::new(data.frames.len(), race_ms(data, PACE))
 	}
 
 	fn number(node: Node, name: &str) -> f64 {
@@ -1048,7 +923,10 @@ mod tests {
 		let document = Document::parse(svg).unwrap();
 		let ms = |node: Node, name| {
 			node.attribute(name).map_or(0.0, |value: &str| {
-				value.trim_end_matches("ms").parse().unwrap()
+				value
+					.split(';')
+					.map(|part| part.trim_end_matches("ms").parse().unwrap())
+					.fold(0.0, f64::max)
 			})
 		};
 		document
@@ -1057,43 +935,812 @@ mod tests {
 			.fold(0.0, f64::max)
 	}
 
-	fn color_list(palette: Palette) -> [&'static str; 5] {
-		[
-			palette.text,
-			palette.muted,
-			palette.ground,
-			palette.belt,
-			palette.belt_accent,
-		]
+	fn color_list(palette: Palette) -> [&'static str; 3] {
+		[palette.text, palette.muted, palette.ground]
 	}
 
-	fn drop_landing_list(document: &Document, name: &str) -> Vec<f64> {
-		document
-			.descendants()
-			.filter(|node| node.attribute("data-drop") == Some(name))
-			.map(|drop| {
-				let motion = drop.first_element_child().unwrap();
-				ms(motion, "begin") + ms(motion, "dur")
+	fn shown_at(column: Node, ms: f64) -> bool {
+		let point_list = fade_points(column);
+		if point_list.is_empty() {
+			return column.attribute("opacity") != Some("0");
+		}
+		let after = point_list
+			.iter()
+			.position(|(at, _)| *at > ms + 0.5)
+			.unwrap();
+		point_list[after - 1].1.max(point_list[after].1) > 0.0
+	}
+
+	fn fall_list(column: Node) -> Vec<(f64, f64)> {
+		let point_list = fade_points(column);
+		let rise_list: Vec<f64> = point_list
+			.windows(2)
+			.filter(|pair| pair[0].1 < pair[1].1)
+			.map(|pair| pair[0].0)
+			.collect();
+		point_list
+			.windows(2)
+			.filter(|pair| pair[0].1 > pair[1].1)
+			.map(|pair| {
+				let next_rise = rise_list
+					.iter()
+					.copied()
+					.find(|rise| *rise > pair[0].0)
+					.unwrap_or(f64::INFINITY);
+				(pair[0].0, next_rise)
 			})
 			.collect()
 	}
 
-	fn drop_landing_ms_list(document: &Document, name: &str) -> Vec<u32> {
-		let whole_ms = |node: Node, key: &str| -> u32 {
-			node.attribute(key)
+	fn visible_growth_frames(cells: &[Cell]) -> Vec<usize> {
+		let mut previous = 0;
+		cells
+			.iter()
+			.enumerate()
+			.filter_map(|(frame, cell)| {
+				let grew = cell.lines > previous;
+				previous = cell.lines;
+				(cell.visible && grew).then_some(frame)
+			})
+			.collect()
+	}
+
+	struct Fall {
+		sample_list: Vec<(f64, f64)>,
+		step_ms: f64,
+	}
+
+	impl Fall {
+		fn of(document: &Document) -> Self {
+			let animation = motion(flight_nodes(document)[0]);
+			assert_eq!(animation.attribute("calcMode"), Some("linear"));
+			assert!(!animation.has_attribute("keyTimes"));
+			let sample_list: Vec<(f64, f64)> = animation
+				.attribute("values")
 				.unwrap()
-				.trim_end_matches("ms")
-				.parse()
+				.split(';')
+				.map(|pair| {
+					let (x, y) = pair.split_once(' ').unwrap();
+					(x.parse().unwrap(), y.parse().unwrap())
+				})
+				.collect();
+			let step_ms = ms(animation, "dur") / float(sample_list.len() - 1);
+			Self {
+				sample_list,
+				step_ms,
+			}
+		}
+
+		fn duration(&self) -> f64 {
+			self.step_ms * float(self.sample_list.len() - 1)
+		}
+
+		fn apex_ms(&self) -> f64 {
+			let y_list = self.y_list();
+			let apex = (0..y_list.len())
+				.min_by(|left, right| y_list[*left].total_cmp(&y_list[*right]))
+				.unwrap();
+			self.step_ms * float(apex)
+		}
+
+		fn at(&self, flown: f64) -> (f64, f64) {
+			let place = (flown / self.step_ms).min(float(self.sample_list.len() - 1));
+			let index = (0..self.sample_list.len() - 1)
+				.rfind(|index| float(*index) <= place)
+				.unwrap();
+			let (from, to) = (self.sample_list[index], self.sample_list[index + 1]);
+			let part = place - float(index);
+			(
+				(to.0 - from.0).mul_add(part, from.0),
+				(to.1 - from.1).mul_add(part, from.1),
+			)
+		}
+
+		fn y_list(&self) -> Vec<f64> {
+			self.sample_list.iter().map(|sample| sample.1).collect()
+		}
+
+		fn reach_ms(&self, y: f64) -> f64 {
+			let y_list = self.y_list();
+			let apex = y_list
+				.iter()
+				.enumerate()
+				.min_by(|left, right| left.1.total_cmp(right.1))
 				.unwrap()
+				.0;
+			let after = (apex..y_list.len())
+				.find(|index| y_list[*index] >= y)
+				.unwrap();
+			let (above, below) = (y_list[after - 1], y_list[after]);
+			self.step_ms * (float(after - 1) + (y - above) / (below - above))
+		}
+	}
+
+	fn height_step_list(document: &Document, name: &str) -> Vec<(f64, f64)> {
+		let animation = tagged(document, "data-bar", name)
+			.descendants()
+			.find(|node| node.attribute("attributeName") == Some("height"))
+			.unwrap();
+		assert_eq!(animation.attribute("calcMode"), Some("discrete"));
+		let duration = ms(animation, "dur");
+		let key_list = animation.attribute("keyTimes").unwrap().split(';');
+		let value_list = animation.attribute("values").unwrap().split(';');
+		key_list
+			.zip(value_list)
+			.map(|(key, value)| {
+				(
+					key.parse::<f64>().unwrap() * duration,
+					value.parse::<f64>().unwrap() - TOP_RADIUS,
+				)
+			})
+			.collect()
+	}
+
+	fn height_at(step_list: &[(f64, f64)], at: f64) -> f64 {
+		step_list.iter().rfind(|(step, _)| *step <= at).unwrap().1
+	}
+
+	fn linear_at(animation: Node, at: f64) -> f64 {
+		let value_list: Vec<f64> = animation
+			.attribute("values")
+			.unwrap()
+			.split(';')
+			.map(|pair| pair.split(' ').next().unwrap().parse().unwrap())
+			.collect();
+		let duration = ms(animation, "dur");
+		let last = float(value_list.len() - 1);
+		let key_list: Vec<f64> = animation.attribute("keyTimes").map_or_else(
+			|| {
+				(0..value_list.len())
+					.map(|index| float(index) / last)
+					.collect()
+			},
+			|keys| keys.split(';').map(|key| key.parse().unwrap()).collect(),
+		);
+		let index = (0..value_list.len() - 1)
+			.rfind(|index| key_list[*index] * duration <= at)
+			.unwrap();
+		let span = (key_list[index + 1] - key_list[index]) * duration;
+		let part = (key_list[index].mul_add(-duration, at) / span).min(1.0);
+		(value_list[index + 1] - value_list[index]).mul_add(part, value_list[index])
+	}
+
+	fn slide_at(column: Node, at: f64) -> f64 {
+		let animation = column
+			.children()
+			.find(|child| child.attribute("type") == Some("translate"))
+			.unwrap();
+		let x_list = translate_list(column);
+		let step = ms(animation, "dur") / float(x_list.len() - 1);
+		let index = (0..x_list.len() - 1)
+			.rfind(|index| float(*index) * step <= at)
+			.unwrap();
+		let part = (at / step - float(index)).min(1.0);
+		(x_list[index + 1] - x_list[index]).mul_add(part, x_list[index])
+	}
+
+	fn number_list(node: Node, name: &str) -> Vec<f64> {
+		node.attribute(name)
+			.unwrap()
+			.split(';')
+			.map(|value| value.trim().trim_end_matches("ms").parse().unwrap())
+			.collect()
+	}
+
+	fn assert_valid_smil(svg: &str) {
+		assert!(!svg.contains("NaN"));
+		assert!(!svg.contains("inf"));
+		let document = Document::parse(svg).unwrap();
+		for node in document.descendants() {
+			if node.has_attribute("dur") {
+				let duration = ms(node, "dur");
+				assert!(duration.is_finite() && duration > 0.0, "{node:?}");
+				assert_eq!(node.attribute("fill"), Some("freeze"), "{node:?}");
+			}
+			if node.has_attribute("begin") {
+				let begin_list = number_list(node, "begin");
+				assert!(
+					begin_list
+						.iter()
+						.all(|begin| begin.is_finite() && *begin >= 0.0)
+				);
+				let duration = ms(node, "dur");
+				assert!(
+					begin_list
+						.windows(2)
+						.all(|pair| pair[1] - pair[0] >= duration),
+					"{node:?}"
+				);
+			}
+			if node.has_attribute("keyTimes") {
+				let key_list = number_list(node, "keyTimes");
+				let value_count = node.attribute("values").unwrap().split(';').count();
+				assert_eq!(key_list.len(), value_count, "{node:?}");
+				assert!(key_list[0] == 0.0, "{node:?}");
+				assert!(key_list.iter().all(|key| (0.0..=1.0).contains(key)));
+				assert!(
+					key_list.windows(2).all(|pair| pair[0] <= pair[1]),
+					"{node:?}"
+				);
+				if node.attribute("calcMode") != Some("discrete") {
+					assert!(
+						(key_list.last().unwrap() - 1.0).abs() < f64::EPSILON,
+						"{node:?}"
+					);
+				}
+			}
+		}
+	}
+
+	fn burst() -> Timeline {
+		let mut usage = Usage::default();
+		for name in [
+			"Rust", "C", "Python", "Nix", "Go", "Lua", "Shell", "Haskell",
+		] {
+			spread(&mut usage, name, 0..20, 40);
+		}
+		timeline(&usage, 8, 520)
+	}
+
+	fn swap() -> Timeline {
+		let mut usage = Usage::default();
+		spread(&mut usage, "Rust", 0..40, 100);
+		spread(&mut usage, "C", 0..40, 50);
+		spread(&mut usage, "Go", 10..40, 120);
+		timeline(&usage, 2, 520)
+	}
+
+	fn crowd() -> Timeline {
+		let mut usage = Usage::default();
+		for name in ["Rust", "C", "Python", "Nix", "Go", "Lua"] {
+			spread(&mut usage, name, 0..30, 50);
+		}
+		timeline(&usage, 6, 520)
+	}
+
+	fn flight_nodes<'a>(document: &'a Document) -> Vec<Node<'a, 'a>> {
+		document
+			.descendants()
+			.filter(|node| node.attribute("data-flight").is_some())
+			.collect()
+	}
+
+	fn begin_list(animation: Node) -> Vec<f64> {
+		animation
+			.attribute("begin")
+			.unwrap()
+			.split(';')
+			.map(|begin| begin.trim_end_matches("ms").parse().unwrap())
+			.collect()
+	}
+
+	fn motion<'a>(flight_node: Node<'a, 'a>) -> Node<'a, 'a> {
+		flight_node.parent().unwrap().first_element_child().unwrap()
+	}
+
+	fn fire_list(document: &Document, name: &str) -> Vec<f64> {
+		let mut list: Vec<f64> = flight_nodes(document)
+			.into_iter()
+			.filter(|node| node.attribute("data-flight") == Some(name))
+			.flat_map(|node| begin_list(motion(node)))
+			.collect();
+		list.sort_by(f64::total_cmp);
+		list
+	}
+
+	#[test]
+	fn one_flight_per_visible_growth() {
+		let data = fixture();
+		let race = Race::new(&data, PACE);
+		let row_list = grid(&data, &race.clock);
+		let svg = render_languages(&data, Variant::Dark, PACE);
+		let document = Document::parse(&svg).unwrap();
+		let mut total = 0;
+		for (index, (summary, cells)) in data.languages.iter().zip(&row_list).enumerate() {
+			let name = summary.language.name;
+			let expected = visible_growth_frames(cells);
+			assert_eq!(fire_list(&document, name).len(), expected.len(), "{name}");
+			let mut frame_list: Vec<usize> = race
+				.flight_list
+				.iter()
+				.filter(|flight| flight.lane == index)
+				.map(|flight| flight.frame)
+				.collect();
+			frame_list.sort_unstable();
+			assert_eq!(frame_list, expected, "{name}");
+			total += expected.len();
+		}
+		assert_eq!(race.flight_list.len(), total);
+		assert!(total > 300, "{total}");
+		for node in flight_nodes(&document) {
+			let name = node.attribute("data-flight").unwrap();
+			let index = data
+				.languages
+				.iter()
+				.position(|summary| summary.language.name == name)
+				.unwrap();
+			assert_eq!(node.attribute("href"), Some(format!("#j{index}").as_str()));
+			let upright = tagged(&document, "id", &format!("j{index}"));
+			assert_eq!(
+				upright
+					.descendants()
+					.find(|child| child.has_tag_name("use"))
+					.unwrap()
+					.attribute("href"),
+				Some(format!("#i{index}").as_str())
+			);
+		}
+	}
+
+	#[test]
+	fn every_flight_lands_before_its_frame_shows() {
+		for data in [fixture(), wanderer(), burst(), swap(), crowd()] {
+			let race = Race::new(&data, PACE);
+			let clock = &race.clock;
+			assert!(!race.flight_list.is_empty());
+			for flight in &race.flight_list {
+				let frame_ms = clock.ms(clock.lead + flight.frame);
+				assert!(
+					f64::from(flight.land_ms) <= frame_ms,
+					"{} {frame_ms}",
+					flight.land_ms
+				);
+				assert!(flight.enter_ms <= flight.fire_ms && flight.fire_ms < flight.land_ms);
+			}
+		}
+	}
+
+	#[test]
+	fn bar_grows_only_on_landing() {
+		let data = fixture();
+		let svg = render_languages(&data, Variant::Dark, PACE);
+		let document = Document::parse(&svg).unwrap();
+		let fall = Fall::of(&document);
+		let y_list = fall.y_list();
+		let apex = y_list.iter().copied().fold(f64::INFINITY, f64::min);
+		assert!(apex < GROUND - CHART_HEIGHT - TOKEN_RADIUS);
+		assert!(*y_list.last().unwrap() > GROUND + TOKEN_RADIUS);
+		assert!(y_list[0] < GROUND && y_list[0] > apex);
+		assert!((fall.sample_list.last().unwrap().0 - 1.0).abs() < f64::EPSILON);
+		assert!(
+			fall.sample_list
+				.iter()
+				.all(|sample| (0.0..=1.0).contains(&sample.0))
+		);
+		for name in FINAL_ORDER {
+			let step_list = height_step_list(&document, name);
+			let fire_list = fire_list(&document, name);
+			assert_eq!(step_list[0], (0.0, 0.0), "{name}");
+			assert_eq!(step_list.len(), fire_list.len() + 1, "{name}");
+			for (fire, pair) in fire_list.iter().zip(step_list.windows(2)) {
+				let landing_y = GROUND - pair[0].1 - TOKEN_RADIUS;
+				let landing = fire + fall.reach_ms(landing_y);
+				assert!(
+					(landing - pair[1].0).abs() <= 3.0,
+					"{name} {landing} {pair:?}"
+				);
+				assert!(pair[1].1 >= pair[0].1, "{name}");
+			}
+			let final_height = number(tagged(&document, "data-bar", name), "height") - TOP_RADIUS;
+			assert!(
+				(step_list.last().unwrap().1 - final_height).abs() < 0.1,
+				"{name}"
+			);
+		}
+	}
+
+	#[test]
+	fn entering_column_opens_on_first_fire() {
+		let mut entered = 0;
+		for data in [fixture(), wanderer()] {
+			let svg = render_languages(&data, Variant::Dark, PACE);
+			let document = Document::parse(&svg).unwrap();
+			for summary in &data.languages {
+				let name = summary.language.name;
+				let fires = fire_list(&document, name);
+				let point_list = fade_points(column(&document, name));
+				for pair in point_list.windows(2).filter(|pair| pair[0].1 < pair[1].1) {
+					let rise = pair[0].0;
+					assert!(
+						fires.iter().any(|fire| (fire - rise).abs() <= 1.0),
+						"{name} {rise}"
+					);
+					entered += 1;
+				}
+			}
+		}
+		assert!(entered >= 6, "{entered}");
+	}
+
+	#[test]
+	fn bar_steps_never_follow_their_frame() {
+		for data in [fixture(), swap(), wanderer()] {
+			let race = Race::new(&data, PACE);
+			let clock = &race.clock;
+			let duration = clock.duration();
+			let svg = render_languages(&data, Variant::Dark, PACE);
+			let document = Document::parse(&svg).unwrap();
+			for lane in &race.lanes {
+				let animation = tagged(&document, "data-bar", lane.name())
+					.descendants()
+					.find(|node| node.attribute("attributeName") == Some("height"))
+					.unwrap();
+				let step_key_list: Vec<f64> = number_list(animation, "keyTimes");
+				let mut fed: Vec<&Flight> = race
+					.flight_list
+					.iter()
+					.filter(|flight| flight.lane == lane.index)
+					.collect();
+				fed.sort_by_key(|flight| flight.land_ms);
+				assert_eq!(step_key_list.len(), fed.len() + 1, "{}", lane.name());
+				for (step_key, flight) in step_key_list[1..].iter().zip(fed) {
+					let frame_key: f64 = key_time(clock.ms(clock.lead + flight.frame), duration)
+						.parse()
+						.unwrap();
+					assert!(
+						*step_key <= frame_key,
+						"{} {step_key} {frame_key}",
+						lane.name()
+					);
+				}
+			}
+		}
+	}
+
+	fn reach_of<'a>(flight_node: Node<'a, 'a>) -> Node<'a, 'a> {
+		flight_node
+			.parent()
+			.unwrap()
+			.parent()
+			.unwrap()
+			.children()
+			.find(|child| child.attribute("type") == Some("scale"))
+			.unwrap()
+	}
+
+	fn landing_miss(document: &Document, fall: &Fall, node: Node, begin: f64) -> f64 {
+		let name = node.attribute("data-flight").unwrap();
+		let column = column(document, name);
+		let width = number(tagged(document, "data-bar", name), "width");
+		let step_list = height_step_list(document, name);
+		let mut flown = fall.apex_ms();
+		let contact = loop {
+			let at = begin + flown;
+			let top = GROUND - height_at(&step_list, at);
+			if fall.at(flown).1 + TOKEN_RADIUS >= top {
+				break at;
+			}
+			flown += 0.5;
+			assert!(flown <= fall.duration(), "{name} {begin}");
 		};
-		document
-			.descendants()
-			.filter(|node| node.attribute("data-drop") == Some(name))
-			.map(|drop| {
-				let motion = drop.first_element_child().unwrap();
-				whole_ms(motion, "begin") + whole_ms(motion, "dur")
+		let x = fall
+			.at(contact - begin)
+			.0
+			.mul_add(linear_at(reach_of(node), contact), 36.0);
+		(x - slide_at(column, contact)).abs() - width / 2.0
+	}
+
+	#[test]
+	fn circles_land_on_their_column() {
+		let paced = [fixture(), swap(), wanderer()]
+			.into_iter()
+			.flat_map(|data| [(data.clone(), PACE), (data, MIN_SECONDS_PER_YEAR)]);
+		for (data, pace) in paced {
+			let svg = render_languages(&data, Variant::Dark, pace);
+			let document = Document::parse(&svg).unwrap();
+			let fall = Fall::of(&document);
+			let mut landed = 0;
+			for node in flight_nodes(&document) {
+				for begin in begin_list(motion(node)) {
+					let miss = landing_miss(&document, &fall, node, begin);
+					assert!(miss <= 0.0, "{node:?} {begin} {miss}");
+					landed += 1;
+				}
+			}
+			assert!(landed > 20, "{landed}");
+		}
+		let dense = large();
+		let svg = render_languages(&dense, Variant::Dark, PACE);
+		let document = Document::parse(&svg).unwrap();
+		let fall = Fall::of(&document);
+		let sampled: Vec<(Node, f64)> = flight_nodes(&document)
+			.into_iter()
+			.filter(|node| !reach_of(*node).has_attribute("keyTimes"))
+			.flat_map(|node| {
+				begin_list(motion(node))
+					.into_iter()
+					.map(move |begin| (node, begin))
 			})
-			.collect()
+			.take(60)
+			.collect();
+		assert_eq!(sampled.len(), 60);
+		for (node, begin) in sampled {
+			let miss = landing_miss(&document, &fall, node, begin);
+			assert!(miss <= 0.0, "{node:?} {begin} {miss}");
+		}
+	}
+
+	fn track(animation: Node) -> (Vec<f64>, Vec<f64>) {
+		let value_list: Vec<f64> = animation
+			.attribute("values")
+			.unwrap()
+			.split(';')
+			.map(|pair| pair.split(' ').next().unwrap().parse().unwrap())
+			.collect();
+		let duration = ms(animation, "dur");
+		let last = float(value_list.len() - 1);
+		let key_list: Vec<f64> = animation.attribute("keyTimes").map_or_else(
+			|| {
+				(0..value_list.len())
+					.map(|index| float(index) / last * duration)
+					.collect()
+			},
+			|keys| {
+				keys.split(';')
+					.map(|key| key.parse::<f64>().unwrap() * duration)
+					.collect()
+			},
+		);
+		(key_list, value_list)
+	}
+
+	fn track_at(track: &(Vec<f64>, Vec<f64>), at: f64) -> f64 {
+		let (key_list, value_list) = track;
+		let after = key_list.partition_point(|key| *key <= at);
+		if after == key_list.len() {
+			return *value_list.last().unwrap();
+		}
+		let before = after - 1;
+		let part = (at - key_list[before]) / (key_list[after] - key_list[before]);
+		(value_list[after] - value_list[before]).mul_add(part, value_list[before])
+	}
+
+	#[test]
+	fn logos_stay_round_while_columns_slide() {
+		let mut worst: f64 = 0.0;
+		for data in [large(), wanderer(), swap()] {
+			for pace in [PACE, MIN_SECONDS_PER_YEAR] {
+				let svg = render_languages(&data, Variant::Dark, pace);
+				let document = Document::parse(&svg).unwrap();
+				for node in flight_nodes(&document) {
+					let id = node.attribute("href").unwrap().trim_start_matches('#');
+					let upright = tagged(&document, "id", id);
+					let inverse = track(upright.first_element_child().unwrap());
+					let unit: f64 = upright
+						.last_element_child()
+						.unwrap()
+						.attribute("transform")
+						.unwrap()
+						.trim_start_matches("scale(")
+						.split(' ')
+						.next()
+						.unwrap()
+						.parse()
+						.unwrap();
+					let forward = track(reach_of(node));
+					let mut break_list: Vec<f64> =
+						forward.0.iter().chain(&inverse.0).copied().collect();
+					break_list.sort_by(f64::total_cmp);
+					for pair in break_list.windows(2) {
+						for quarter in 0..4 {
+							let at = (pair[1] - pair[0]).mul_add(float(quarter) / 4.0, pair[0]);
+							let skew = (track_at(&forward, at) * track_at(&inverse, at))
+								.mul_add(unit, -1.0)
+								.abs();
+							worst = worst.max(skew);
+						}
+					}
+				}
+			}
+		}
+		assert!(worst <= 0.02, "{worst}");
+		assert!(worst > 0.0);
+	}
+
+	#[test]
+	fn first_week_burst_extends_lead() {
+		let data = burst();
+		let race = Race::new(&data, PACE);
+		let clock = &race.clock;
+		let first_frame = race
+			.flight_list
+			.iter()
+			.filter(|flight| flight.frame == 0)
+			.count();
+		assert_eq!(first_frame, 8);
+		let first_tick_ms = clock.ms(clock.lead);
+		assert!(first_tick_ms > 1_600.0, "{first_tick_ms}");
+		let earliest = race
+			.flight_list
+			.iter()
+			.map(|flight| flight.enter_ms)
+			.min()
+			.unwrap();
+		assert!(earliest < clock.tick_ms, "{earliest}");
+		let svg = render_languages(&data, Variant::Dark, PACE);
+		assert_valid_smil(&svg);
+	}
+
+	#[test]
+	fn boundary_swap_feeds_entering_column_after_leaving_lands() {
+		let data = swap();
+		let race = Race::new(&data, PACE);
+		let svg = render_languages(&data, Variant::Dark, PACE);
+		let document = Document::parse(&svg).unwrap();
+		let go = column(&document, "Go");
+		let c = column(&document, "C");
+		assert!(first_rise_ms(go).is_some());
+		assert_eq!(fall_list(c), [(fall_list(c)[0].0, f64::INFINITY)]);
+		let wanderer = wanderer();
+		let svg = render_languages(&wanderer, Variant::Dark, PACE);
+		let wandering = Document::parse(&svg).unwrap();
+		let back = fall_list(column(&wandering, "C"));
+		assert_eq!(back.len(), 2);
+		assert!(back[0].1 > back[0].0 && back[0].1 < back[1].0);
+		for (index, summary) in data.languages.iter().enumerate() {
+			let column = column(&document, summary.language.name);
+			let landing_list: Vec<f64> = race
+				.flight_list
+				.iter()
+				.filter(|flight| flight.lane == index)
+				.map(|flight| f64::from(flight.land_ms))
+				.collect();
+			for landing in &landing_list {
+				assert!(shown_at(column, *landing), "{index} {landing}");
+			}
+			for (fall, next_rise) in fall_list(column) {
+				assert!(
+					landing_list
+						.iter()
+						.all(|landing| !(fall + 1.0..next_rise).contains(landing)),
+					"{index} {fall}"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn simultaneous_shots_render_valid_smil() {
+		let data = crowd();
+		let race = Race::new(&data, 0.1);
+		assert!(
+			race.flight_list
+				.windows(2)
+				.any(|pair| pair[1].fire_ms == pair[0].fire_ms)
+		);
+		for data in [crowd(), fixture(), burst()] {
+			for pace in [0.1, PACE] {
+				assert_valid_smil(&render_languages(&data, Variant::Dark, pace));
+			}
+		}
+	}
+
+	#[test]
+	fn fade_merges_blips_and_keeps_short_runs() {
+		let blip = [
+			Shown {
+				on: 0.0,
+				off: Some(300.0),
+			},
+			Shown {
+				on: 500.0,
+				off: None,
+			},
+		];
+		assert_eq!(fade(&blip, 900.0), "");
+		let gap = [
+			Shown {
+				on: 0.0,
+				off: Some(300.0),
+			},
+			Shown {
+				on: 600.0,
+				off: None,
+			},
+		];
+		let animation = fade(&gap, 1_000.0);
+		assert!(animation.contains("values=\"1;1;0;0;1;1\""), "{animation}");
+		assert!(
+			animation.contains("keyTimes=\"0;.3;.55;.6;.85;1\""),
+			"{animation}"
+		);
+		let short = [Shown {
+			on: 100.0,
+			off: Some(150.0),
+		}];
+		let animation = fade(&short, 1_000.0);
+		assert!(animation.contains("values=\"0;0;1;1;0;0\""), "{animation}");
+		assert!(
+			animation.contains("keyTimes=\"0;.1;.35;.35;.6;1\""),
+			"{animation}"
+		);
+		let late = [Shown {
+			on: 0.0,
+			off: Some(900.0),
+		}];
+		let animation = fade(&late, 1_000.0);
+		assert!(animation.contains("keyTimes=\"0;.9;1;1\""), "{animation}");
+	}
+
+	#[test]
+	fn belt_is_gone() {
+		let svg = render_languages(&fixture(), Variant::Dark, PACE);
+		let document = Document::parse(&svg).unwrap();
+		for node in document.descendants() {
+			for attribute in node.attributes() {
+				let mentions_belt = attribute.name().contains("belt")
+					|| (["id", "class"].contains(&attribute.name())
+						&& attribute.value().contains("belt"));
+				assert!(!mentions_belt, "{node:?}");
+			}
+		}
+		assert!(!svg.contains("url(#cb)"));
+		assert!(!svg.contains("data-drop"));
+		assert!(!svg.contains("stroke-dasharray=\"2 10\""));
+	}
+
+	#[test]
+	fn slingshot_is_drawn_in_git_color() {
+		for data in [fixture(), Timeline::default()] {
+			let svg = render_languages(&data, Variant::Light, PACE);
+			let document = Document::parse(&svg).unwrap();
+			let sling_list: Vec<Node> = document
+				.descendants()
+				.filter(|node| node.has_tag_name("g") && node.has_attribute("data-slingshot"))
+				.collect();
+			assert_eq!(sling_list.len(), 1);
+			let sling = sling_list[0];
+			assert_eq!(sling.attribute("stroke"), Some("#e84e31"));
+			for node in sling.descendants() {
+				if let Some(stroke) = node.attribute("stroke") {
+					assert_eq!(stroke, "#e84e31", "{node:?}");
+				}
+			}
+			let mut ring_list: Vec<(f64, f64)> = sling
+				.descendants()
+				.filter(|node| node.has_tag_name("circle"))
+				.map(|ring| (number(ring, "cx"), number(ring, "cy")))
+				.collect();
+			assert_eq!(ring_list.len(), 3);
+			ring_list
+				.sort_by(|left, right| left.1.total_cmp(&right.1).then(left.0.total_cmp(&right.0)));
+			let (left_prong, right_prong, foot) = (ring_list[0], ring_list[1], ring_list[2]);
+			assert!((left_prong.1 - right_prong.1).abs() < 0.01);
+			assert!(left_prong.0 < right_prong.0);
+			assert!(foot.1 > right_prong.1 + 40.0);
+			assert!((foot.0 - right_prong.0).abs() < 0.01);
+			assert!(foot.1 < GROUND);
+		}
+	}
+
+	#[test]
+	fn idle_timelines_draw_a_static_slingshot() {
+		let mut flat = single("Rust");
+		let first = flat.frames[0].clone();
+		for index in 1..4 {
+			flat.frames.push(Frame {
+				week: week(index),
+				..first.clone()
+			});
+		}
+		let blank = Timeline {
+			frames: vec![Frame {
+				entries: Vec::new(),
+				..first
+			}],
+			..single("Rust")
+		};
+		for (data, flights) in [(Timeline::default(), 0), (blank, 0), (flat, 1)] {
+			let svg = render_languages(&data, Variant::Dark, PACE);
+			let document = Document::parse(&svg).unwrap();
+			assert!(svg.contains("data-slingshot"));
+			assert!(!svg.contains("NaN"));
+			let fired: usize = flight_nodes(&document)
+				.into_iter()
+				.map(|node| begin_list(motion(node)).len())
+				.sum();
+			assert_eq!(fired, flights);
+		}
 	}
 
 	#[test]
@@ -1203,7 +1850,7 @@ mod tests {
 	#[test]
 	fn column_enters_when_first_within_top_n() {
 		let data = fixture();
-		let clock = clock_of(&data);
+		let clock = Race::new(&data, PACE).clock;
 		let visible = grid(&data, &clock);
 		let svg = render_languages(&data, Variant::Dark, PACE);
 		let document = Document::parse(&svg).unwrap();
@@ -1218,7 +1865,7 @@ mod tests {
 			};
 			let entry_tick = clock.lead + first;
 			assert!(first > 0, "{name}");
-			assert!((rise - clock.ms(entry_tick)).abs() < 1.0, "{name} {rise}");
+			assert!(rise < clock.ms(entry_tick), "{name} {rise}");
 			let x_list = translate_list(column);
 			assert!(
 				x_list[..entry_tick]
@@ -1258,7 +1905,7 @@ mod tests {
 	#[test]
 	fn column_reenters_after_dropping_below_top_n() {
 		let data = wanderer();
-		let clock = clock_of(&data);
+		let race = Race::new(&data, PACE);
 		let svg = render_languages(&data, Variant::Dark, PACE);
 		let document = Document::parse(&svg).unwrap();
 		let c = column(&document, "C");
@@ -1276,25 +1923,16 @@ mod tests {
 			.iter()
 			.position(|summary| summary.language.name == "C")
 			.unwrap();
-		let cells = &grid(&data, &clock)[c_index];
-		let landing_list = drop_landing_ms_list(&document, "C");
-		assert!(landing_list.len() >= 2, "{landing_list:?}");
-		for landing in landing_list {
-			let tick = usize::try_from((landing + clock.tick_ms / 2) / clock.tick_ms).unwrap();
-			let frame = clock.frame_of(tick);
-			assert!(cells[frame].visible, "{landing} {frame}");
-		}
-	}
-
-	#[test]
-	fn first_drop_lands_after_entry() {
-		let svg = render_languages(&fixture(), Variant::Dark, PACE);
-		let document = Document::parse(&svg).unwrap();
-		for name in FINAL_ORDER.iter().chain(&HIDDEN_AT_END) {
-			let entry = first_rise_ms(column(&document, name)).unwrap_or(0.0);
-			for landing in drop_landing_list(&document, name) {
-				assert!(landing + 1.0 >= entry, "{name} {landing} {entry}");
-			}
+		let cells = &grid(&data, &race.clock)[c_index];
+		let c_flights: Vec<&Flight> = race
+			.flight_list
+			.iter()
+			.filter(|flight| flight.lane == c_index)
+			.collect();
+		assert!(c_flights.len() >= 2);
+		for flight in c_flights {
+			assert!(cells[flight.frame].visible, "{}", flight.frame);
+			assert!(shown_at(c, f64::from(flight.land_ms)), "{}", flight.land_ms);
 		}
 	}
 
@@ -1536,28 +2174,6 @@ mod tests {
 	}
 
 	#[test]
-	fn logos_drop_in_proportion_to_growth() {
-		let svg = render_languages(&fixture(), Variant::Dark, PACE);
-		let document = Document::parse(&svg).unwrap();
-		let count_list: Vec<usize> = FINAL_ORDER
-			.iter()
-			.map(|name| drop_landing_list(&document, name).len())
-			.collect();
-		assert!(
-			count_list.windows(2).all(|pair| pair[0] >= pair[1]),
-			"{count_list:?}"
-		);
-		assert!(count_list.iter().all(|count| *count >= 1));
-		assert!(count_list[0] > count_list[2] * 2);
-		for node in document.descendants() {
-			if let Some(begin) = node.attribute("begin") {
-				let ms: f64 = begin.trim_end_matches("ms").parse().unwrap();
-				assert!(ms >= 0.0, "{begin}");
-			}
-		}
-	}
-
-	#[test]
 	fn no_external_references() {
 		let svg = render_languages(&fixture(), Variant::Dark, PACE);
 		assert_eq!(svg.matches("http").count(), 1);
@@ -1662,8 +2278,12 @@ mod tests {
 	#[test]
 	fn duration_grows_with_years_of_history() {
 		let data = fixture();
-		let normal = end_ms(&render_languages(&data, Variant::Dark, PACE));
-		let slow = end_ms(&render_languages(&data, Variant::Dark, PACE * 2.0));
+		let after_lead = |pace: f64| {
+			let clock = Race::new(&data, pace).clock;
+			end_ms(&render_languages(&data, Variant::Dark, pace)) - clock.ms(clock.lead)
+		};
+		let normal = after_lead(PACE);
+		let slow = after_lead(PACE * 2.0);
 		let race = f64::from(race_ms(&data, PACE));
 		assert!(race > 14_000.0, "{race}");
 		assert!(
@@ -1712,7 +2332,7 @@ mod tests {
 				.iter()
 				.any(|summary| summary.language.name == "Go")
 		);
-		let clock = clock_of(&data);
+		let clock = Race::new(&data, PACE).clock;
 		let go = data
 			.languages
 			.iter()
@@ -1721,19 +2341,8 @@ mod tests {
 		assert!(grid(&data, &clock)[go].iter().all(|cell| !cell.visible));
 		let svg = render_languages(&data, Variant::Dark, PACE);
 		assert!(!svg.contains("data-column=\"Go\""));
-		assert!(!svg.contains("data-drop=\"Go\""));
+		assert!(!svg.contains("data-flight=\"Go\""));
 		assert!(svg.contains("data-column=\"Nix\""));
-	}
-
-	#[test]
-	fn fade_reversal_within_a_fade_collapses() {
-		let clock = Clock::new(10, 900);
-		assert_eq!(clock.tick_ms, 100);
-		let blip = [true, true, true, false, false, true, true, true];
-		assert_eq!(fade(&blip, &clock), "");
-		let gap = [true, true, true, false, false, false, true, true];
-		let animation = fade(&gap, &clock);
-		assert!(animation.contains("values=\"1;1;0;0;1;1\""), "{animation}");
 	}
 
 	#[test]
@@ -1748,8 +2357,8 @@ mod tests {
 		});
 		let svg = render_languages(&data, Variant::Dark, PACE);
 		assert!(!svg.contains("data-column=\"C\""));
-		assert!(svg.contains("data-drop=\"Rust\""));
-		assert!(!svg.contains("data-drop=\"C\""));
+		assert!(svg.contains("data-flight=\"Rust\""));
+		assert!(!svg.contains("data-flight=\"C\""));
 	}
 
 	#[test]
@@ -1758,7 +2367,7 @@ mod tests {
 		let svg = render_languages(&single(name), Variant::Light, PACE);
 		assert!(svg.is_ascii());
 		let document = Document::parse(&svg).unwrap();
-		for key in ["data-bar", "data-column", "data-drop"] {
+		for key in ["data-bar", "data-column", "data-flight"] {
 			assert_eq!(tagged(&document, key, name).attribute(key), Some(name));
 		}
 		let texts = text_list(column(&document, name));

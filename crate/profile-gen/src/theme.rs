@@ -9,8 +9,6 @@ pub struct Palette {
 	pub text: &'static str,
 	pub muted: &'static str,
 	pub ground: &'static str,
-	pub belt: &'static str,
-	pub belt_accent: &'static str,
 }
 
 pub const FONT_STACK: &str =
@@ -20,16 +18,12 @@ const DARK: Palette = Palette {
 	text: "#e6edf3",
 	muted: "#9198a1",
 	ground: "#3d444d",
-	belt: "#6e7681",
-	belt_accent: "#d29922",
 };
 
 const LIGHT: Palette = Palette {
 	text: "#1f2328",
 	muted: "#59636e",
 	ground: "#d1d9e0",
-	belt: "#818b98",
-	belt_accent: "#bf8700",
 };
 
 #[must_use]
@@ -45,14 +39,8 @@ mod tests {
 	use super::*;
 	use crate::language::LANGUAGE_LIST;
 
-	fn color_list(palette: Palette) -> [&'static str; 5] {
-		[
-			palette.text,
-			palette.muted,
-			palette.ground,
-			palette.belt,
-			palette.belt_accent,
-		]
+	fn color_list(palette: Palette) -> [&'static str; 3] {
+		[palette.text, palette.muted, palette.ground]
 	}
 
 	#[test]
@@ -83,7 +71,14 @@ mod tests {
 		unique.sort();
 		unique.dedup();
 		assert_eq!(unique.len(), all.len());
-		assert_eq!(palette_count, 10);
+		assert_eq!(palette_count, 6);
+	}
+
+	#[test]
+	fn palette_has_no_belt_colors() {
+		let dark = format!("{:?}", palette(Variant::Dark));
+		assert!(!dark.contains("belt"), "{dark}");
+		assert!(!dark.contains("e84e31"), "{dark}");
 	}
 
 	#[test]
