@@ -1,13 +1,13 @@
 use std::collections::BTreeSet;
 
-use super::format::{discrete, escape, float, key_time, num, whole_ms};
-use super::languages::{GROUND, WIDTH};
+use super::format::{discrete, escape, key_time, num, whole_ms};
+use super::languages::{GROUND, TOKEN_RADIUS, WIDTH};
 use crate::theme::Palette;
 
 pub(super) const SLINGSHOT: &str = "#e84e31";
 pub(super) const TUBE_CAPACITY: usize = 11;
 
-const SLING_X: f64 = 36.0;
+pub(super) const SLING_X: f64 = 36.0;
 const PRONG: f64 = 13.0;
 const RING: f64 = 4.5;
 const STROKE: f64 = 4.5;
@@ -17,7 +17,7 @@ const JOIN_Y: f64 = PRONG_Y + 44.0;
 const LEFT_PRONG_X: f64 = SLING_X - PRONG;
 const RIGHT_PRONG_X: f64 = SLING_X + PRONG;
 
-const POUCH_Y: f64 = PRONG_Y + 6.0;
+pub(super) const POUCH_Y: f64 = PRONG_Y + 6.0;
 const PULL_X: f64 = -14.0;
 const PULL_Y: f64 = 10.0;
 const PULL_MS: u32 = 200;
@@ -34,17 +34,17 @@ const TUBE_REST_Y: f64 = TUBE_BOTTOM - TUBE_RADIUS;
 const WALL_OVERHANG: f64 = 8.0;
 const WINDOW_HEIGHT: f64 = 400.0;
 
-const APEX_Y: f64 = 64.0;
-const SINK_Y: f64 = GROUND + 12.0;
-const CLEAR_Y: f64 = 90.0;
-const RISE_MS: u32 = 340;
-const FALL_MS: u32 = 460;
-const FLIGHT_MS: u32 = RISE_MS + FALL_MS;
-const SAMPLE_COUNT: u32 = 20;
-const MAX_STRETCH: f64 = 1.28;
-const MAX_SKEW: f64 = 0.015;
-const MAX_PIECES: u32 = 64;
-const UPRIGHT_UNIT: f64 = 1_000.0;
+const GRAVITY: f64 = 0.0024;
+const APEX_MARGIN: f64 = 10.0;
+const APEX_PER_PX: f64 = 0.03;
+const APEX_PER_LIFT: f64 = 0.55;
+const RESTING_Y: f64 = GROUND - TOKEN_RADIUS;
+const HIDDEN_Y: f64 = GROUND + TOKEN_RADIUS;
+const FREE_FALL_SPLINE: &str = ".333 0 .667 .333";
+const FIRE_KEY_STEPS: f64 = 10_000.0;
+const VANISH_KEY_STEPS: f64 = 1_000.0;
+const THROW_SLACK_MS: f64 = 0.5;
+const THROW_SEARCH: u32 = 64;
 
 pub(super) struct Flight {
 	pub(super) lane: usize,
@@ -53,57 +53,36 @@ pub(super) struct Flight {
 	pub(super) enter_ms: u32,
 	pub(super) fire_ms: u32,
 	pub(super) land_ms: u32,
+	pub(super) to_x: f64,
+	pub(super) landing_y: f64,
 }
 
-pub(super) struct Track<'a> {
-	pub(super) lane: usize,
-	pub(super) x_list: &'a [f64],
-	pub(super) tick_ms: u32,
+pub(super) fn flight_ms(dx: f64, landing_y: f64) -> i64 {
+	let apex_y = apex_y(dx, landing_y);
+	whole_ms(fall_ms(POUCH_Y - apex_y) + fall_ms(landing_y - apex_y))
 }
 
-pub(super) fn flight_ms(landing_y: f64) -> i64 {
-	whole_ms(reach_ms(landing_y))
+fn apex_y(dx: f64, landing_y: f64) -> f64 {
+	let lift = APEX_PER_LIFT * (RESTING_Y - landing_y.max(POUCH_Y)).max(0.0);
+	POUCH_Y.min(landing_y) - APEX_PER_PX.mul_add(dx.abs(), APEX_MARGIN) - lift
 }
 
-fn reach_ms(y: f64) -> f64 {
-	let fallen = ((y - APEX_Y) / (SINK_Y - APEX_Y)).clamp(0.0, 1.0);
-	f64::from(FALL_MS).mul_add(fallen.sqrt(), f64::from(RISE_MS))
+fn fall_ms(height: f64) -> f64 {
+	(2.0 * height.max(0.0) / GRAVITY).sqrt()
 }
 
-fn height_at(ms: f64) -> f64 {
-	let rise = f64::from(RISE_MS);
-	if ms < rise {
-		let left = 1.0 - ms / rise;
-		(POUCH_Y - APEX_Y).mul_add(left * left, APEX_Y)
-	} else {
-		let fallen = (ms - rise) / f64::from(FALL_MS);
-		(SINK_Y - APEX_Y).mul_add(fallen * fallen, APEX_Y)
-	}
-}
-
-fn reach_at(ms: f64) -> f64 {
-	let left = (1.0 - ms / reach_ms(CLEAR_Y)).max(0.0);
-	left.mul_add(-left, 1.0)
-}
-
-pub(super) fn feeder(
-	flight_list: &[Flight],
-	track_list: &[Track],
-	duration: f64,
-	colors: Palette,
-) -> String {
-	let volley_list = volley_list(flight_list, track_list);
+pub(super) fn feeder(flight_list: &[Flight], duration: f64, colors: Palette) -> String {
 	[
-		defs(flight_list, &volley_list, duration),
+		defs(flight_list, duration),
 		tube(flight_list, duration, colors),
 		slingshot(),
 		band(flight_list, duration, colors),
-		flights(&volley_list),
+		flights(flight_list, duration),
 	]
 	.concat()
 }
 
-fn defs(flight_list: &[Flight], volley_list: &[Volley], duration: f64) -> String {
+fn defs(flight_list: &[Flight], duration: f64) -> String {
 	let lane_set: BTreeSet<usize> = flight_list.iter().map(|flight| flight.lane).collect();
 	let marker_list: Vec<String> = lane_set
 		.iter()
@@ -116,14 +95,13 @@ fn defs(flight_list: &[Flight], volley_list: &[Volley], duration: f64) -> String
 		.collect();
 	format!(
 		concat!(
-			"<defs>{markers}{logos}",
+			"<defs>{markers}",
 			"<clipPath id=\"tb\"><rect x=\"{tube_x}\" y=\"{tube_y}\" width=\"{tube_w}\" height=\"{tube_h}\"/></clipPath>",
 			"<clipPath id=\"tw\"><rect y=\"{bottom}\" width=\"{w}\" height=\"{window_h}\">{window}</rect></clipPath>",
 			"<clipPath id=\"kf\"><rect width=\"{w}\" height=\"{g}\"/></clipPath>",
 			"</defs>",
 		),
 		markers = marker_list.concat(),
-		logos = upright_logos(volley_list),
 		tube_x = num(SLING_X - TUBE_WALL, 1),
 		tube_y = num(TUBE_TOP, 1),
 		tube_w = num(2.0 * TUBE_WALL, 1),
@@ -319,245 +297,210 @@ fn band(flight_list: &[Flight], duration: f64, colors: Palette) -> String {
 	)
 }
 
-struct Volley<'a> {
+struct Launch {
+	fire_ms: u32,
+	vanish_ms: u32,
+	fire_key: f64,
+	vanish_key: f64,
+	thrust: (f64, f64),
+	hidden_ms: u32,
+}
+
+fn whole(ms: f64) -> u32 {
+	u32::try_from(whole_ms(ms)).unwrap_or(u32::MAX)
+}
+
+fn sink_ms(climb: f64, depth: f64) -> f64 {
+	(GRAVITY.mul_add(2.0 * depth, climb * climb).sqrt() - climb) / GRAVITY
+}
+
+fn climb(flight: &Flight) -> f64 {
+	let flown = f64::from(flight.land_ms - flight.fire_ms);
+	(GRAVITY * flown / 2.0).mul_add(-flown, flight.landing_y - POUCH_Y) / flown
+}
+
+fn sunk_ms(flight: &Flight) -> f64 {
+	f64::from(flight.fire_ms) + sink_ms(climb(flight), flight.landing_y + TOKEN_RADIUS - POUCH_Y)
+}
+
+pub(super) fn throw_ms(fire_ms: u32, duration: f64) -> u32 {
+	let step = duration / FIRE_KEY_STEPS;
+	let latest = (f64::from(fire_ms) / step).floor();
+	let index = (0..THROW_SEARCH)
+		.map(|back| latest - f64::from(back))
+		.take_while(|index| *index >= 0.0)
+		.find(|index| {
+			let ms = index * step;
+			ms.ceil() - ms <= THROW_SLACK_MS
+		})
+		.unwrap_or(latest);
+	whole((index * step).ceil()).min(fire_ms)
+}
+
+pub(super) fn absorbed_ms(flight: &Flight) -> f64 {
+	f64::midpoint(f64::from(flight.land_ms), sunk_ms(flight))
+}
+
+fn launch(flight: &Flight, duration: f64) -> Launch {
+	let fire = f64::from(flight.fire_ms);
+	let land = f64::from(flight.land_ms);
+	let flown = land - fire;
+	let sunk = sunk_ms(flight);
+	let reach = (
+		(flight.to_x - SLING_X) * flown / (absorbed_ms(flight) - fire),
+		climb(flight) * flown,
+	);
+	let vanish_ms = whole(sunk.ceil());
+	let fire_key =
+		((fire - THROW_SLACK_MS / 2.0) / duration * FIRE_KEY_STEPS).round() / FIRE_KEY_STEPS;
+	let vanish_key = (f64::from(vanish_ms) / duration * VANISH_KEY_STEPS).ceil() / VANISH_KEY_STEPS;
+	let from = fire_key * duration;
+	let stretch = vanish_key.mul_add(duration, -from) / (land - from);
+	let thrust = ((reach.0 * stretch).round(), (reach.1 * stretch).round());
+	Launch {
+		fire_ms: flight.fire_ms,
+		vanish_ms,
+		fire_key,
+		vanish_key,
+		thrust,
+		hidden_ms: whole(fall_ms(HIDDEN_Y + 1.0 - POUCH_Y - thrust.1).ceil()),
+	}
+}
+
+struct Pool {
 	lane: usize,
 	name: &'static str,
-	x_list: &'a [f64],
-	tick_ms: u32,
-	pool_list: Vec<Vec<u32>>,
+	launch_list: Vec<Launch>,
+	drop_ms: u32,
 }
 
-fn volley_list<'a>(flight_list: &[Flight], track_list: &[Track<'a>]) -> Vec<Volley<'a>> {
-	track_list
+impl Pool {
+	fn takes(&self, lane: usize, launch: &Launch, hide_ms: u32) -> bool {
+		self.lane == lane
+			&& self.launch_list.last().is_some_and(|last| {
+				last.vanish_key < launch.fire_key && last.vanish_ms + hide_ms < launch.fire_ms
+			})
+	}
+
+	fn push(&mut self, launch: Launch) {
+		self.drop_ms = self.drop_ms.max(launch.hidden_ms);
+		self.launch_list.push(launch);
+	}
+}
+
+fn hide_ms(launch_list: &[Launch]) -> u32 {
+	launch_list
 		.iter()
-		.map(|track| {
-			let own: Vec<&Flight> = flight_list
-				.iter()
-				.filter(|flight| flight.lane == track.lane)
-				.collect();
-			let mut pool_list: Vec<Vec<u32>> = Vec::new();
-			for flight in &own {
-				let free = pool_list.iter().position(|pool| {
-					pool.last()
-						.is_some_and(|last| last + FLIGHT_MS <= flight.fire_ms)
-				});
-				match free {
-					Some(index) => pool_list[index].push(flight.fire_ms),
-					None => pool_list.push(vec![flight.fire_ms]),
-				}
-			}
-			Volley {
-				lane: track.lane,
-				name: own.first().map_or("", |flight| flight.name),
-				x_list: track.x_list,
-				tick_ms: track.tick_ms,
-				pool_list,
-			}
-		})
-		.filter(|volley| !volley.pool_list.is_empty())
-		.collect()
+		.map(|launch| (launch.fire_ms + launch.hidden_ms).saturating_sub(launch.vanish_ms))
+		.max()
+		.unwrap_or(0)
+		+ 1
 }
 
-fn begins(list: &[u32]) -> String {
-	let text_list: Vec<String> = list.iter().map(|ms| format!("{ms}ms")).collect();
-	text_list.join(";")
+fn pool_list(flight_list: &[Flight], duration: f64, hide_ms: u32) -> Vec<Pool> {
+	let mut pool_list: Vec<Pool> = Vec::new();
+	for flight in flight_list {
+		let launch = launch(flight, duration);
+		match pool_list
+			.iter_mut()
+			.find(|pool| pool.takes(flight.lane, &launch, hide_ms))
+		{
+			Some(pool) => pool.push(launch),
+			None => pool_list.push(Pool {
+				lane: flight.lane,
+				name: flight.name,
+				drop_ms: launch.hidden_ms,
+				launch_list: vec![launch],
+			}),
+		}
+	}
+	pool_list
 }
 
-fn trajectory() -> String {
-	let sample_list: Vec<String> = (0..=SAMPLE_COUNT)
-		.map(|sample| {
-			let ms = f64::from(FLIGHT_MS * sample) / f64::from(SAMPLE_COUNT);
-			format!("{} {}", num(reach_at(ms), 3), num(height_at(ms), 1))
-		})
+fn thrust_text(thrust: (f64, f64)) -> String {
+	format!("{} {}", num(thrust.0, 0), num(thrust.1, 0))
+}
+
+fn seconds(ms: u32) -> String {
+	num(f64::from(ms) / 1_000.0, 3)
+}
+
+fn thrust(pool: &Pool, duration: f64) -> String {
+	let thrust_list: Vec<String> = pool
+		.launch_list
+		.iter()
+		.map(|launch| thrust_text(launch.thrust))
 		.collect();
-	sample_list.join(";")
-}
-
-fn reach_list(volley: &Volley) -> Vec<f64> {
-	volley.x_list.iter().map(|x| x - SLING_X).collect()
-}
-
-fn kept_ticks(reach_list: &[f64]) -> Vec<usize> {
-	let last = reach_list.len().saturating_sub(1);
-	(0..=last)
-		.filter(|index| *index == 0 || *index == last || bends(reach_list, *index))
-		.collect()
-}
-
-fn bends(reach_list: &[f64], index: usize) -> bool {
-	let before = reach_list[index] - reach_list[index - 1];
-	let after = reach_list[index + 1] - reach_list[index];
-	before.total_cmp(&after).is_ne()
-}
-
-fn stretch(from: f64, to: f64) -> f64 {
-	from.max(to) / from.min(to)
-}
-
-fn pieces(from: f64, to: f64) -> u32 {
-	let ratio = stretch(from, to);
-	(1..=MAX_PIECES)
-		.find(|count| ratio.powf(1.0 / f64::from(*count)) <= MAX_STRETCH)
-		.unwrap_or(MAX_PIECES)
-}
-
-fn scale_animation(value_list: &[String], key_list: Option<&[String]>, duration: f64) -> String {
-	let keys = key_list.map_or_else(String::new, |list| {
-		format!(" keyTimes=\"{}\"", list.join(";"))
-	});
+	let mut point_list: Vec<(f64, &str)> = vec![(0.0, "0")];
+	for (launch, thrust) in pool.launch_list.iter().zip(&thrust_list) {
+		point_list.extend([(launch.fire_key, "0"), (launch.vanish_key, thrust.as_str())]);
+	}
+	let last = thrust_list.last().map_or("0", String::as_str);
+	point_list.push((1.0, last));
+	let key_list: Vec<String> = point_list
+		.iter()
+		.map(|(key, _)| key_time(key * duration, duration))
+		.collect();
+	let value_list: Vec<&str> = point_list.iter().map(|(_, value)| *value).collect();
 	format!(
 		concat!(
-			"transform=\"scale({last})\">",
-			"<animateTransform attributeName=\"transform\" type=\"scale\" calcMode=\"linear\" values=\"{values}\"{keys} dur=\"{dur}ms\" fill=\"freeze\"/>",
+			"<g transform=\"translate({last})\">",
+			"<animateTransform attributeName=\"transform\" type=\"translate\" values=\"{values}\" keyTimes=\"{keys}\" dur=\"{dur}ms\" fill=\"freeze\"/>",
 		),
-		last = value_list.last().cloned().unwrap_or_default(),
+		last = last,
 		values = value_list.join(";"),
-		keys = keys,
+		keys = key_list.join(";"),
 		dur = num(duration, 0),
 	)
 }
 
-fn track_duration(volley: &Volley) -> f64 {
-	float(volley.x_list.len().saturating_sub(1).max(1)) * f64::from(volley.tick_ms)
+fn circle(pool: &Pool, hide_ms: u32) -> String {
+	let drop_ms = f64::from(pool.drop_ms);
+	let deep = (GRAVITY * drop_ms / 2.0).mul_add(drop_ms, POUCH_Y);
+	let begins = |at: fn(&Launch) -> u32| {
+		let list: Vec<String> = pool
+			.launch_list
+			.iter()
+			.map(|launch| seconds(at(launch)))
+			.collect();
+		list.join(";")
+	};
+	format!(
+		concat!(
+			"<use href=\"#i{lane}\" x=\"{x}\" y=\"{deep}\" data-flight=\"{name}\">",
+			"<animateMotion calcMode=\"spline\" keySplines=\"{spline}\" values=\"0 {lift};0 0\" dur=\"{drop}ms\" begin=\"{fires}\" fill=\"freeze\"/>",
+			"<animate attributeName=\"opacity\" calcMode=\"discrete\" values=\"0;1\" dur=\"{hide}ms\" begin=\"{vanishes}\" fill=\"freeze\"/>",
+			"</use>",
+		),
+		lane = pool.lane,
+		x = num(SLING_X, 1),
+		deep = num(deep, 1),
+		name = escape(pool.name),
+		spline = FREE_FALL_SPLINE,
+		lift = num(POUCH_Y - deep, 1),
+		drop = pool.drop_ms,
+		fires = begins(|launch| launch.fire_ms),
+		hide = 2 * hide_ms,
+		vanishes = begins(|launch| launch.vanish_ms),
+	)
 }
 
-fn follow(volley: &Volley) -> String {
-	let reach_list = reach_list(volley);
-	let scale = |reach: f64| format!("{} 1", num(reach, 1));
-	let duration = track_duration(volley);
-	let last = float(reach_list.len().saturating_sub(1).max(1));
-	let every: Vec<String> = reach_list.iter().map(|reach| scale(*reach)).collect();
-	let kept = kept_ticks(&reach_list);
-	let keyed_values: Vec<String> = kept.iter().map(|index| scale(reach_list[*index])).collect();
-	let keyed_keys: Vec<String> = kept
+fn flights(flight_list: &[Flight], duration: f64) -> String {
+	let launch_list: Vec<Launch> = flight_list
 		.iter()
-		.map(|index| key_time(float(*index), last))
+		.map(|flight| launch(flight, duration))
 		.collect();
-	[
-		scale_animation(&every, None, duration),
-		scale_animation(&keyed_values, Some(&keyed_keys), duration),
-	]
-	.into_iter()
-	.min_by_key(String::len)
-	.unwrap_or_default()
-}
-
-fn reach_between(reach_list: &[f64], quarter: usize) -> f64 {
-	let tick = quarter / 4;
-	let from = reach_list[tick];
-	let to = reach_list.get(tick + 1).copied().unwrap_or(from);
-	(to - from).mul_add(float(quarter % 4) / 4.0, from)
-}
-
-fn fits(reach_list: &[f64], from: usize, to: usize) -> bool {
-	let (start, end) = (1.0 / reach_list[from], 1.0 / reach_list[to]);
-	let span = float(to - from) * 4.0;
-	(from * 4..=to * 4).all(|quarter| {
-		let part = float(quarter - from * 4) / span;
-		let inverse = (end - start).mul_add(part, start);
-		reach_between(reach_list, quarter)
-			.mul_add(inverse, -1.0)
-			.abs()
-			<= MAX_SKEW
-	})
-}
-
-fn upright_points(reach_list: &[f64]) -> Vec<(f64, f64)> {
-	let last = reach_list.len().saturating_sub(1);
-	let mut point_list: Vec<(f64, f64)> = reach_list
-		.first()
-		.map(|reach| (0.0, *reach))
-		.into_iter()
-		.collect();
-	let mut from = 0;
-	while from < last {
-		let mut to = from + 1;
-		if fits(reach_list, from, to) {
-			while to < last && fits(reach_list, from, to + 1) {
-				to += 1;
-			}
-		} else {
-			let (start, end) = (reach_list[from], reach_list[to]);
-			let count = pieces(start, end);
-			let step = (end / start).powf(1.0 / f64::from(count));
-			point_list.extend((1..count).map(|piece| {
-				let reach = start * step.powi(i32::try_from(piece).unwrap_or(i32::MAX));
-				(float(from) + (reach - start) / (end - start), reach)
-			}));
-		}
-		point_list.push((float(to), reach_list[to]));
-		from = to;
-	}
-	point_list
-}
-
-fn unfollow(volley: &Volley) -> String {
-	let reach_list = reach_list(volley);
-	let scale = |reach: f64| format!("{} 1", num(UPRIGHT_UNIT / reach, 3));
-	let duration = track_duration(volley);
-	let last = float(reach_list.len().saturating_sub(1).max(1));
-	let point_list = upright_points(&reach_list);
-	let value_list: Vec<String> = point_list.iter().map(|(_, reach)| scale(*reach)).collect();
-	let key_list: Vec<String> = point_list
+	let hide_ms = hide_ms(&launch_list);
+	let pool_text: Vec<String> = pool_list(flight_list, duration, hide_ms)
 		.iter()
-		.map(|(tick, _)| key_time(*tick, last))
+		.map(|pool| format!("{}{}</g>", thrust(pool, duration), circle(pool, hide_ms)))
 		.collect();
-	scale_animation(&value_list, Some(&key_list), duration)
-}
-
-fn flights(volley_list: &[Volley]) -> String {
-	let path = trajectory();
-	let volley_text: Vec<String> = volley_list
-		.iter()
-		.map(|volley| {
-			let pool_text: Vec<String> = volley
-				.pool_list
-				.iter()
-				.map(|begin_list| {
-					format!(
-						concat!(
-							"<g transform=\"translate(1 {sink})\">",
-							"<animateTransform attributeName=\"transform\" type=\"translate\" calcMode=\"linear\" values=\"{path}\" dur=\"{flight}ms\" begin=\"{begin}\" fill=\"freeze\"/>",
-							"<use href=\"#j{lane}\" data-flight=\"{name}\"/>",
-							"</g>",
-						),
-						sink = num(SINK_Y, 1),
-						path = path,
-						flight = FLIGHT_MS,
-						begin = begins(begin_list),
-						lane = volley.lane,
-						name = escape(volley.name),
-					)
-				})
-				.collect();
-			format!(
-				"<g transform=\"translate({x})\"><g {scale}{pools}</g></g>",
-				x = num(SLING_X, 1),
-				scale = follow(volley),
-				pools = pool_text.concat(),
-			)
-		})
-		.collect();
-	format!("<g clip-path=\"url(#kf)\">{}</g>", volley_text.concat())
-}
-
-fn upright_logos(volley_list: &[Volley]) -> String {
-	let logo_list: Vec<String> = volley_list
-		.iter()
-		.map(|volley| {
-			format!(
-				"<g id=\"j{lane}\" {scale}<use href=\"#i{lane}\" transform=\"scale({unit} 1)\"/></g>",
-				lane = volley.lane,
-				scale = unfollow(volley),
-				unit = num(1.0 / UPRIGHT_UNIT, 3),
-			)
-		})
-		.collect();
-	logo_list.concat()
+	format!("<g clip-path=\"url(#kf)\">{}</g>", pool_text.concat())
 }
 
 #[cfg(test)]
 mod tests {
+	use super::super::probe::Pool as Probe;
 	use super::*;
 	use crate::theme::{Variant, palette};
 	use roxmltree::{Document, Node};
@@ -565,6 +508,10 @@ mod tests {
 	const DURATION: f64 = 10_000.0;
 
 	fn flight(lane: usize, enter_ms: u32, fire_ms: u32) -> Flight {
+		aimed(lane, enter_ms, fire_ms, 250.0)
+	}
+
+	fn aimed(lane: usize, enter_ms: u32, fire_ms: u32, landing_y: f64) -> Flight {
 		Flight {
 			lane,
 			name: "Rust",
@@ -572,6 +519,8 @@ mod tests {
 			enter_ms,
 			fire_ms,
 			land_ms: fire_ms + 500,
+			to_x: 300.0,
+			landing_y,
 		}
 	}
 
@@ -604,6 +553,36 @@ mod tests {
 			.count()
 	}
 
+	fn measured(dx: f64, landing_y: f64) -> (f64, f64) {
+		let fire_ms = 100;
+		let flight = Flight {
+			land_ms: fire_ms + u32::try_from(flight_ms(dx, landing_y)).unwrap(),
+			to_x: SLING_X + dx,
+			..aimed(0, 0, fire_ms, landing_y)
+		};
+		let svg = wrapped(&feeder(&[flight], DURATION, palette(Variant::Dark)));
+		let document = Document::parse(&svg).unwrap();
+		let node = document
+			.descendants()
+			.find(|node| node.has_attribute("data-flight"))
+			.unwrap();
+		let probe = Probe::of(node);
+		let begin = probe.begin_list[0];
+		let landing = probe.reaching(begin, landing_y);
+		let absorbed = probe.at(f64::midpoint(landing, probe.vanish(begin)), begin);
+		assert!((absorbed.0 - SLING_X - dx).abs() <= 1.5, "{absorbed:?}");
+		assert!(
+			(landing - begin - f64::from(u32::try_from(flight_ms(dx, landing_y)).unwrap())).abs()
+				<= 1.5
+		);
+		let apex = probe
+			.samples(begin, 400)
+			.iter()
+			.map(|(_, point)| point.1)
+			.fold(f64::INFINITY, f64::min);
+		(apex, landing - begin)
+	}
+
 	#[test]
 	fn tube_capacity_is_what_fits() {
 		let places = (TUBE_BOTTOM - TUBE_TOP) / TUBE_STEP;
@@ -613,17 +592,28 @@ mod tests {
 	}
 
 	#[test]
-	fn taller_bars_are_hit_sooner_and_after_the_aim() {
-		let tallest = flight_ms(GROUND - 196.0 - 10.0);
-		let shortest = flight_ms(GROUND - 10.0);
-		assert!(tallest < shortest);
-		assert!(reach_ms(CLEAR_Y) <= reach_ms(GROUND - 196.0 - 10.0));
-		assert!(shortest < i64::from(FLIGHT_MS));
-		assert!((height_at(reach_ms(150.0)) - 150.0).abs() < 1e-9);
-		assert!((height_at(0.0) - POUCH_Y).abs() < 1e-9);
-		assert!((height_at(f64::from(FLIGHT_MS)) - SINK_Y).abs() < 1e-9);
-		assert!((reach_at(f64::from(FLIGHT_MS)) - 1.0).abs() < 1e-9);
-		assert!(reach_at(0.0).abs() < 1e-9);
+	fn farther_and_higher_targets_fly_higher_and_longer() {
+		let (near_apex, near_ms) = measured(56.0, RESTING_Y);
+		let (far_apex, far_ms) = measured(700.0, RESTING_Y);
+		assert!(far_apex < near_apex - 10.0, "{near_apex} {far_apex}");
+		assert!(far_ms > near_ms + 30.0, "{near_ms} {far_ms}");
+		assert!(near_ms < 400.0, "{near_ms}");
+		let mut previous = (f64::INFINITY, 0.0);
+		for landing_y in [RESTING_Y, 260.0, 230.0, POUCH_Y, 180.0, 140.0, 94.0] {
+			let (apex, ms) = measured(300.0, landing_y);
+			assert!(
+				apex < previous.0 && ms > previous.1,
+				"{landing_y} {apex} {ms}"
+			);
+			assert!(
+				apex < landing_y.min(POUCH_Y) - APEX_MARGIN,
+				"{landing_y} {apex}"
+			);
+			previous = (apex, ms);
+		}
+		let (highest, longest) = measured(812.0, 94.0);
+		assert!(highest >= TOKEN_RADIUS, "{highest}");
+		assert!(longest < 700.0, "{longest}");
 	}
 
 	#[test]
@@ -635,20 +625,7 @@ mod tests {
 			flight(2, 900, 900),
 			flight(1, 950, 1_200),
 		];
-		let x_list = [100.0, 100.0];
-		let track_list: Vec<Track> = (0..3)
-			.map(|lane| Track {
-				lane,
-				x_list: &x_list,
-				tick_ms: 100,
-			})
-			.collect();
-		let svg = wrapped(&feeder(
-			&flight_list,
-			&track_list,
-			DURATION,
-			palette(Variant::Dark),
-		));
+		let svg = wrapped(&feeder(&flight_list, DURATION, palette(Variant::Dark)));
 		let document = Document::parse(&svg).unwrap();
 		let window = document
 			.descendants()
@@ -695,93 +672,89 @@ mod tests {
 	}
 
 	#[test]
-	fn volleys_reuse_free_circles_and_follow_their_column() {
+	fn pools_reuse_circles_once_hidden() {
 		let flight_list = [
 			flight(0, 0, 0),
 			flight(0, 0, 100),
-			flight(0, 0, 900),
-			flight(0, 0, 1_000),
-			flight(1, 0, 1_000),
+			flight(0, 0, 2_000),
+			flight(0, 0, 2_100),
+			flight(1, 0, 2_000),
+			aimed(2, 0, 3_000, 94.0),
+			flight(2, 0, 3_600),
+			flight(2, 0, 3_700),
+			flight(2, 0, 4_300),
 		];
-		let sliding = [100.0, 100.0, 120.0, 140.0, 140.0];
-		let resting = [300.0, 300.0, 300.0, 300.0, 300.0];
-		let track_list = [
-			Track {
-				lane: 0,
-				x_list: &sliding,
-				tick_ms: 100,
-			},
-			Track {
-				lane: 1,
-				x_list: &resting,
-				tick_ms: 100,
-			},
-			Track {
-				lane: 2,
-				x_list: &resting,
-				tick_ms: 100,
-			},
-		];
-		let volley_list = volley_list(&flight_list, &track_list);
-		assert_eq!(volley_list.len(), 2);
-		assert_eq!(volley_list[0].pool_list, [vec![0, 900], vec![100, 1_000]]);
-		assert_eq!(volley_list[1].pool_list, [vec![1_000]]);
-		let svg = wrapped(&format!(
-			"<defs>{}</defs>{}",
-			upright_logos(&volley_list),
-			flights(&volley_list)
-		));
-		let document = Document::parse(&svg).unwrap();
-		let scale_list: Vec<Node> = document
-			.descendants()
-			.filter(|node| node.attribute("type") == Some("scale"))
+		let launch_list: Vec<Launch> = flight_list
+			.iter()
+			.map(|flight| launch(flight, DURATION))
 			.collect();
-		assert_eq!(scale_list.len(), 4);
+		let hide_ms = hide_ms(&launch_list);
+		let fire_list: Vec<(usize, Vec<u32>)> = pool_list(&flight_list, DURATION, hide_ms)
+			.iter()
+			.map(|pool| {
+				let fire_list = pool.launch_list.iter().map(|launch| launch.fire_ms);
+				(pool.lane, fire_list.collect())
+			})
+			.collect();
 		assert_eq!(
-			scale_list[0].attribute("values"),
-			Some("15.625 1;15.625 1;13.639 1;11.905 1;9.615 1;9.615 1")
+			fire_list,
+			[
+				(0, vec![0, 2_000]),
+				(0, vec![100, 2_100]),
+				(1, vec![2_000]),
+				(2, vec![3_000, 3_700]),
+				(2, vec![3_600, 4_300]),
+			]
 		);
-		assert_eq!(
-			scale_list[0].attribute("keyTimes"),
-			Some("0;.25;.36652;.5;.75;1")
-		);
-		assert_eq!(scale_list[0].attribute("dur"), Some("400ms"));
-		assert_eq!(scale_list[1].attribute("values"), Some("3.788 1;3.788 1"));
-		assert_eq!(scale_list[1].attribute("keyTimes"), Some("0;1"));
-		assert!(!scale_list[2].has_attribute("keyTimes"));
-		assert_eq!(
-			scale_list[2].attribute("values"),
-			Some("64 1;64 1;84 1;104 1;104 1")
-		);
-		assert_eq!(scale_list[3].attribute("values"), Some("264 1;264 1"));
-		let upright = document
-			.descendants()
-			.find(|node| node.attribute("id") == Some("j1"))
-			.unwrap();
-		assert_eq!(upright.attribute("transform"), Some("scale(3.788 1)"));
-		assert_eq!(
-			upright.last_element_child().unwrap().attribute("transform"),
-			Some("scale(0.001 1)")
-		);
-		assert_eq!(
-			upright.last_element_child().unwrap().attribute("href"),
-			Some("#i1")
-		);
-		let use_list: Vec<Node> = document
+		let svg = wrapped(&flights(&flight_list, DURATION));
+		let document = Document::parse(&svg).unwrap();
+		let node_list: Vec<Node> = document
 			.descendants()
 			.filter(|node| node.has_attribute("data-flight"))
 			.collect();
-		assert_eq!(use_list.len(), 3);
-		assert_eq!(use_list[2].attribute("href"), Some("#j1"));
+		assert_eq!(node_list.len(), 5);
+		assert!(Probe::of(node_list[3]).drop_ms() > 650.0);
+		let (first, second) = (&launch_list[0], &launch_list[2]);
+		let thrust = thrust_text(first.thrust);
+		let outer = node_list[0].parent().unwrap();
+		let track = outer.first_element_child().unwrap();
 		assert_eq!(
-			use_list[0]
-				.parent()
-				.unwrap()
-				.parent()
-				.unwrap()
-				.attribute("transform"),
-			Some("scale(104 1)")
+			track.attribute("values"),
+			Some(format!("0;0;{thrust};0;{thrust};{thrust}").as_str())
 		);
+		let key = |key: f64| key_time(key * DURATION, DURATION);
+		assert_eq!(
+			track.attribute("keyTimes"),
+			Some(
+				format!(
+					"0;0;{};{};{};1",
+					key(first.vanish_key),
+					key(second.fire_key),
+					key(second.vanish_key)
+				)
+				.as_str()
+			)
+		);
+		assert!(first.vanish_ms > 500 && first.vanish_key * DURATION >= f64::from(first.vanish_ms));
+		assert_eq!(
+			outer.attribute("transform"),
+			Some(format!("translate({thrust})").as_str())
+		);
+		for node in node_list {
+			let probe = Probe::of(node);
+			assert!(probe.static_at().1 >= HIDDEN_Y);
+			for begin in &probe.begin_list {
+				let vanish = probe.vanish(*begin);
+				assert!(probe.shown(*begin) && probe.shown(vanish - 1.0), "{begin}");
+				assert!(!probe.shown(vanish) && !probe.shown(vanish + f64::from(hide_ms) - 1.0));
+				let hidden = vanish + f64::from(hide_ms);
+				assert!(
+					probe.shown(hidden) && probe.at(hidden, *begin).1 >= HIDDEN_Y,
+					"{begin}"
+				);
+				assert!(probe.at(DURATION, *begin).1 >= HIDDEN_Y, "{begin}");
+			}
+		}
 	}
 
 	#[test]

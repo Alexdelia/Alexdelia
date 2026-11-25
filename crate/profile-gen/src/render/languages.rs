@@ -1,9 +1,9 @@
 use super::clock::{Clock, race_ms};
 use super::feed::{Feed, Shown, feed_list, growth, paired, shown_list, throw_list};
-use super::feeder::{Flight, TUBE_CAPACITY, Track, feeder, flight_ms};
+use super::feeder::{Flight, SLING_X, TUBE_CAPACITY, absorbed_ms, feeder, flight_ms, throw_ms};
 use super::format::{
 	animate, animate_transform, arrow, compact, discrete, escape, float, key_time, month, num,
-	percent, totals_label, trend_word,
+	percent, totals_label, trend_word, whole_ms,
 };
 use super::ranking::{Cell, cell_at, grid, settle};
 use super::schedule::{Shot, schedule};
@@ -30,10 +30,11 @@ const HEADER_LIST: [&str; 5] = ["share", "lines", "repos", "since", "past year"]
 const GLYPH_EM: f64 = 0.62;
 const NAME_FONT_PX: f64 = 10.0;
 
-const TOKEN_RADIUS: f64 = 10.0;
+pub(super) const TOKEN_RADIUS: f64 = 10.0;
 const DARK_INK_THRESHOLD: u32 = 150_000;
 const GROUND_DRAW_MS: f64 = 600.0;
 const FADE_MS: f64 = 250.0;
+const CONTACT_MARGIN: f64 = 2.0;
 
 const TOKEN_ROW: f64 = GROUND + 24.0;
 const NAME_ROW: f64 = GROUND + 52.0;
@@ -60,20 +61,7 @@ pub fn render_languages(timeline: &Timeline, variant: Variant, seconds_per_year:
 		defs(&race, colors),
 		ground(colors),
 		headers(&race),
-		feeder(
-			&race.flight_list,
-			&race
-				.lanes
-				.iter()
-				.map(|lane| Track {
-					lane: lane.index,
-					x_list: &lane.x,
-					tick_ms: race.clock.tick_ms,
-				})
-				.collect::<Vec<_>>(),
-			race.clock.duration(),
-			colors,
-		),
+		feeder(&race.flight_list, race.clock.duration(), colors),
 		race.lanes
 			.iter()
 			.map(|lane| column(lane, &race))
@@ -175,7 +163,11 @@ impl<'a> Race<'a> {
 		let feed_list = feed_list(&row_list);
 		let plan = schedule(
 			&throw_list(&feed_list, provisional.tick_ms, |feed| {
-				flight_ms(landing_y(feed.fed_before, top_lines))
+				let slot = cell_at(&row_list[feed.lane], feed.frame).slot;
+				flight_ms(
+					layout.center(slot) - SLING_X,
+					landing_y(bar_height(feed.fed_before, top_lines)),
+				)
 			}),
 			TUBE_CAPACITY,
 		);
@@ -186,7 +178,7 @@ impl<'a> Race<'a> {
 			.enumerate()
 			.map(|(index, (summary, cells))| lane(index, summary, cells, &clock, &layout))
 			.collect();
-		let flight_list: Vec<Flight> = paired(&feed_list, &plan.shots)
+		let mut flight_list: Vec<Flight> = paired(&feed_list, &plan.shots)
 			.into_iter()
 			.map(|(feed, shot)| flight(feed, shot, &lanes[feed.lane], &clock))
 			.collect();
@@ -198,6 +190,11 @@ impl<'a> Race<'a> {
 				.map(|(ms, lines)| (ms, bar_height(lines, top_lines)))
 				.collect();
 			lane.shown = shown;
+		}
+		for flight in &mut flight_list {
+			let lane = &lanes[flight.lane];
+			flight.landing_y = landing_y(height_before(&lane.growth, flight.land_ms));
+			flight.to_x = aim_x(flight, &lane.x, clock.tick_ms, layout.bar_width() / 2.0);
 		}
 		lanes.retain(|lane| lane.cells.iter().any(|cell| cell.visible));
 		Self {
@@ -211,18 +208,51 @@ impl<'a> Race<'a> {
 
 fn flight(feed: &Feed, shot: &Shot, lane: &Lane, clock: &Clock) -> Flight {
 	let at = |ms: i64| u32::try_from(ms + clock.lead_ms()).unwrap_or(u32::MAX);
+	let fire_ms = throw_ms(at(shot.fire_ms), clock.duration());
 	Flight {
 		lane: feed.lane,
 		name: lane.name(),
 		frame: feed.frame,
-		enter_ms: at(shot.enter_ms),
-		fire_ms: at(shot.fire_ms),
+		enter_ms: throw_ms(at(shot.enter_ms), clock.duration()).min(fire_ms),
+		fire_ms,
 		land_ms: at(shot.land_ms),
+		to_x: 0.0,
+		landing_y: 0.0,
 	}
 }
 
-fn landing_y(fed_lines: u64, top_lines: u64) -> f64 {
-	GROUND - bar_height(fed_lines, top_lines) - TOKEN_RADIUS
+fn landing_y(bar_height: f64) -> f64 {
+	GROUND - bar_height - TOKEN_RADIUS
+}
+
+fn height_before(growth: &[(u32, f64)], ms: u32) -> f64 {
+	growth
+		.iter()
+		.take_while(|(step_ms, _)| *step_ms < ms)
+		.last()
+		.map_or(0.0, |(_, height)| *height)
+}
+
+fn aim_x(flight: &Flight, x_list: &[f64], tick_ms: u32, half_width: f64) -> f64 {
+	let fire = f64::from(flight.fire_ms);
+	let land = f64::from(flight.land_ms);
+	let absorbed = absorbed_ms(flight);
+	let share = (land - fire) / (absorbed - fire);
+	let column = x_at(x_list, land, tick_ms);
+	let reach = (half_width - CONTACT_MARGIN).max(0.0);
+	let contact = (x_at(x_list, absorbed, tick_ms) - SLING_X)
+		.mul_add(share, SLING_X)
+		.clamp(column - reach, column + reach);
+	SLING_X + (contact - SLING_X) / share
+}
+
+fn x_at(x_list: &[f64], ms: f64, tick_ms: u32) -> f64 {
+	let tick = u32::try_from(whole_ms(ms.floor())).unwrap_or(u32::MAX) / tick_ms;
+	let last = x_list.len().saturating_sub(1);
+	let index = usize::try_from(tick).unwrap_or(usize::MAX).min(last);
+	let from = x_list.get(index).copied().unwrap_or(SLING_X);
+	let to = x_list.get(index + 1).copied().unwrap_or(from);
+	(to - from).mul_add((ms / f64::from(tick_ms) - float(index)).min(1.0), from)
 }
 
 fn bar_height(lines: u64, top_lines: u64) -> f64 {
@@ -634,6 +664,8 @@ fn date_and_totals(timeline: &Timeline, clock: &Clock) -> String {
 
 #[cfg(test)]
 mod tests {
+	use super::super::feeder::{POUCH_Y, SLING_X};
+	use super::super::probe::{Pool, off_line};
 	use super::super::ranking::grid;
 	use super::*;
 	use crate::cache::Usage;
@@ -985,77 +1017,6 @@ mod tests {
 			.collect()
 	}
 
-	struct Fall {
-		sample_list: Vec<(f64, f64)>,
-		step_ms: f64,
-	}
-
-	impl Fall {
-		fn of(document: &Document) -> Self {
-			let animation = motion(flight_nodes(document)[0]);
-			assert_eq!(animation.attribute("calcMode"), Some("linear"));
-			assert!(!animation.has_attribute("keyTimes"));
-			let sample_list: Vec<(f64, f64)> = animation
-				.attribute("values")
-				.unwrap()
-				.split(';')
-				.map(|pair| {
-					let (x, y) = pair.split_once(' ').unwrap();
-					(x.parse().unwrap(), y.parse().unwrap())
-				})
-				.collect();
-			let step_ms = ms(animation, "dur") / float(sample_list.len() - 1);
-			Self {
-				sample_list,
-				step_ms,
-			}
-		}
-
-		fn duration(&self) -> f64 {
-			self.step_ms * float(self.sample_list.len() - 1)
-		}
-
-		fn apex_ms(&self) -> f64 {
-			let y_list = self.y_list();
-			let apex = (0..y_list.len())
-				.min_by(|left, right| y_list[*left].total_cmp(&y_list[*right]))
-				.unwrap();
-			self.step_ms * float(apex)
-		}
-
-		fn at(&self, flown: f64) -> (f64, f64) {
-			let place = (flown / self.step_ms).min(float(self.sample_list.len() - 1));
-			let index = (0..self.sample_list.len() - 1)
-				.rfind(|index| float(*index) <= place)
-				.unwrap();
-			let (from, to) = (self.sample_list[index], self.sample_list[index + 1]);
-			let part = place - float(index);
-			(
-				(to.0 - from.0).mul_add(part, from.0),
-				(to.1 - from.1).mul_add(part, from.1),
-			)
-		}
-
-		fn y_list(&self) -> Vec<f64> {
-			self.sample_list.iter().map(|sample| sample.1).collect()
-		}
-
-		fn reach_ms(&self, y: f64) -> f64 {
-			let y_list = self.y_list();
-			let apex = y_list
-				.iter()
-				.enumerate()
-				.min_by(|left, right| left.1.total_cmp(right.1))
-				.unwrap()
-				.0;
-			let after = (apex..y_list.len())
-				.find(|index| y_list[*index] >= y)
-				.unwrap();
-			let (above, below) = (y_list[after - 1], y_list[after]);
-			self.step_ms * (float(after - 1) + (y - above) / (below - above))
-		}
-	}
-
 	fn height_step_list(document: &Document, name: &str) -> Vec<(f64, f64)> {
 		let animation = tagged(document, "data-bar", name)
 			.descendants()
@@ -1078,31 +1039,6 @@ mod tests {
 
 	fn height_at(step_list: &[(f64, f64)], at: f64) -> f64 {
 		step_list.iter().rfind(|(step, _)| *step <= at).unwrap().1
-	}
-
-	fn linear_at(animation: Node, at: f64) -> f64 {
-		let value_list: Vec<f64> = animation
-			.attribute("values")
-			.unwrap()
-			.split(';')
-			.map(|pair| pair.split(' ').next().unwrap().parse().unwrap())
-			.collect();
-		let duration = ms(animation, "dur");
-		let last = float(value_list.len() - 1);
-		let key_list: Vec<f64> = animation.attribute("keyTimes").map_or_else(
-			|| {
-				(0..value_list.len())
-					.map(|index| float(index) / last)
-					.collect()
-			},
-			|keys| keys.split(';').map(|key| key.parse().unwrap()).collect(),
-		);
-		let index = (0..value_list.len() - 1)
-			.rfind(|index| key_list[*index] * duration <= at)
-			.unwrap();
-		let span = (key_list[index + 1] - key_list[index]) * duration;
-		let part = (key_list[index].mul_add(-duration, at) / span).min(1.0);
-		(value_list[index + 1] - value_list[index]).mul_add(part, value_list[index])
 	}
 
 	fn slide_at(column: Node, at: f64) -> f64 {
@@ -1144,12 +1080,19 @@ mod tests {
 						.iter()
 						.all(|begin| begin.is_finite() && *begin >= 0.0)
 				);
-				let duration = ms(node, "dur");
 				assert!(
-					begin_list
-						.windows(2)
-						.all(|pair| pair[1] - pair[0] >= duration),
+					begin_list.windows(2).all(|pair| pair[1] > pair[0]),
 					"{node:?}"
+				);
+			}
+			if node.attribute("calcMode") == Some("spline") {
+				let value_count = node.attribute("values").unwrap().split(';').count();
+				let spline_list = node.attribute("keySplines").unwrap().split(';');
+				assert_eq!(spline_list.clone().count(), value_count - 1, "{node:?}");
+				assert!(
+					spline_list
+						.flat_map(|spline| spline.split(' '))
+						.all(|control| (0.0..=1.0).contains(&control.parse::<f64>().unwrap()))
 				);
 			}
 			if node.has_attribute("keyTimes") {
@@ -1205,27 +1148,38 @@ mod tests {
 			.collect()
 	}
 
-	fn begin_list(animation: Node) -> Vec<f64> {
-		animation
-			.attribute("begin")
-			.unwrap()
-			.split(';')
-			.map(|begin| begin.trim_end_matches("ms").parse().unwrap())
-			.collect()
-	}
-
-	fn motion<'a>(flight_node: Node<'a, 'a>) -> Node<'a, 'a> {
-		flight_node.parent().unwrap().first_element_child().unwrap()
-	}
-
 	fn fire_list(document: &Document, name: &str) -> Vec<f64> {
 		let mut list: Vec<f64> = flight_nodes(document)
 			.into_iter()
 			.filter(|node| node.attribute("data-flight") == Some(name))
-			.flat_map(|node| begin_list(motion(node)))
+			.flat_map(|node| Pool::of(node).begin_list)
 			.collect();
 		list.sort_by(f64::total_cmp);
 		list
+	}
+
+	fn apex_ms(pool: &Pool, begin: f64) -> f64 {
+		pool.samples(begin, 400)
+			.into_iter()
+			.min_by(|left, right| (left.1).1.total_cmp(&(right.1).1))
+			.unwrap()
+			.0
+	}
+
+	fn contact_ms(pool: &Pool, begin: f64, step_list: &[(f64, f64)]) -> f64 {
+		let landing = pool.vanish(begin);
+		let apex = apex_ms(pool, begin);
+		(0_u32..40_000)
+			.map(|step| f64::from(step).mul_add(0.25, apex))
+			.take_while(|at| *at <= landing + 10.0)
+			.find(|at| pool.at(*at, begin).1 + TOKEN_RADIUS >= GROUND - height_at(step_list, *at))
+			.unwrap()
+	}
+
+	fn paced() -> impl Iterator<Item = (Timeline, f64)> {
+		[fixture(), swap(), wanderer()]
+			.into_iter()
+			.flat_map(|data| [(data.clone(), PACE), (data, MIN_SECONDS_PER_YEAR)])
 	}
 
 	#[test]
@@ -1259,16 +1213,7 @@ mod tests {
 				.iter()
 				.position(|summary| summary.language.name == name)
 				.unwrap();
-			assert_eq!(node.attribute("href"), Some(format!("#j{index}").as_str()));
-			let upright = tagged(&document, "id", &format!("j{index}"));
-			assert_eq!(
-				upright
-					.descendants()
-					.find(|child| child.has_tag_name("use"))
-					.unwrap()
-					.attribute("href"),
-				Some(format!("#i{index}").as_str())
-			);
+			assert_eq!(node.attribute("href"), Some(format!("#i{index}").as_str()));
 		}
 	}
 
@@ -1295,29 +1240,26 @@ mod tests {
 		let data = fixture();
 		let svg = render_languages(&data, Variant::Dark, PACE);
 		let document = Document::parse(&svg).unwrap();
-		let fall = Fall::of(&document);
-		let y_list = fall.y_list();
-		let apex = y_list.iter().copied().fold(f64::INFINITY, f64::min);
-		assert!(apex < GROUND - CHART_HEIGHT - TOKEN_RADIUS);
-		assert!(*y_list.last().unwrap() > GROUND + TOKEN_RADIUS);
-		assert!(y_list[0] < GROUND && y_list[0] > apex);
-		assert!((fall.sample_list.last().unwrap().0 - 1.0).abs() < f64::EPSILON);
-		assert!(
-			fall.sample_list
-				.iter()
-				.all(|sample| (0.0..=1.0).contains(&sample.0))
-		);
 		for name in FINAL_ORDER {
 			let step_list = height_step_list(&document, name);
-			let fire_list = fire_list(&document, name);
+			let mut contact_list: Vec<f64> = flight_nodes(&document)
+				.into_iter()
+				.filter(|node| node.attribute("data-flight") == Some(name))
+				.flat_map(|node| {
+					let pool = Pool::of(node);
+					pool.begin_list
+						.iter()
+						.map(|begin| contact_ms(&pool, *begin, &step_list))
+						.collect::<Vec<_>>()
+				})
+				.collect();
+			contact_list.sort_by(f64::total_cmp);
 			assert_eq!(step_list[0], (0.0, 0.0), "{name}");
-			assert_eq!(step_list.len(), fire_list.len() + 1, "{name}");
-			for (fire, pair) in fire_list.iter().zip(step_list.windows(2)) {
-				let landing_y = GROUND - pair[0].1 - TOKEN_RADIUS;
-				let landing = fire + fall.reach_ms(landing_y);
+			assert_eq!(step_list.len(), contact_list.len() + 1, "{name}");
+			for (contact, pair) in contact_list.iter().zip(step_list.windows(2)) {
 				assert!(
-					(landing - pair[1].0).abs() <= 3.0,
-					"{name} {landing} {pair:?}"
+					(contact - pair[1].0).abs() <= 3.0,
+					"{name} {contact} {pair:?}"
 				);
 				assert!(pair[1].1 >= pair[0].1, "{name}");
 			}
@@ -1387,53 +1329,25 @@ mod tests {
 		}
 	}
 
-	fn reach_of<'a>(flight_node: Node<'a, 'a>) -> Node<'a, 'a> {
-		flight_node
-			.parent()
-			.unwrap()
-			.parent()
-			.unwrap()
-			.children()
-			.find(|child| child.attribute("type") == Some("scale"))
-			.unwrap()
-	}
-
-	fn landing_miss(document: &Document, fall: &Fall, node: Node, begin: f64) -> f64 {
-		let name = node.attribute("data-flight").unwrap();
+	fn landing_miss(document: &Document, pool: &Pool, name: &str, begin: f64) -> f64 {
 		let column = column(document, name);
 		let width = number(tagged(document, "data-bar", name), "width");
-		let step_list = height_step_list(document, name);
-		let mut flown = fall.apex_ms();
-		let contact = loop {
-			let at = begin + flown;
-			let top = GROUND - height_at(&step_list, at);
-			if fall.at(flown).1 + TOKEN_RADIUS >= top {
-				break at;
-			}
-			flown += 0.5;
-			assert!(flown <= fall.duration(), "{name} {begin}");
-		};
-		let x = fall
-			.at(contact - begin)
-			.0
-			.mul_add(linear_at(reach_of(node), contact), 36.0);
-		(x - slide_at(column, contact)).abs() - width / 2.0
+		let contact = contact_ms(pool, begin, &height_step_list(document, name));
+		(pool.at(contact, begin).0 - slide_at(column, contact)).abs() - width / 2.0
 	}
 
 	#[test]
 	fn circles_land_on_their_column() {
-		let paced = [fixture(), swap(), wanderer()]
-			.into_iter()
-			.flat_map(|data| [(data.clone(), PACE), (data, MIN_SECONDS_PER_YEAR)]);
-		for (data, pace) in paced {
+		for (data, pace) in paced() {
 			let svg = render_languages(&data, Variant::Dark, pace);
 			let document = Document::parse(&svg).unwrap();
-			let fall = Fall::of(&document);
 			let mut landed = 0;
 			for node in flight_nodes(&document) {
-				for begin in begin_list(motion(node)) {
-					let miss = landing_miss(&document, &fall, node, begin);
-					assert!(miss <= 0.0, "{node:?} {begin} {miss}");
+				let name = node.attribute("data-flight").unwrap();
+				let pool = Pool::of(node);
+				for begin in &pool.begin_list {
+					let miss = landing_miss(&document, &pool, name, *begin);
+					assert!(miss <= 0.0, "{name} {begin} {miss}");
 					landed += 1;
 				}
 			}
@@ -1442,99 +1356,228 @@ mod tests {
 		let dense = large();
 		let svg = render_languages(&dense, Variant::Dark, PACE);
 		let document = Document::parse(&svg).unwrap();
-		let fall = Fall::of(&document);
 		let sampled: Vec<(Node, f64)> = flight_nodes(&document)
 			.into_iter()
-			.filter(|node| !reach_of(*node).has_attribute("keyTimes"))
 			.flat_map(|node| {
-				begin_list(motion(node))
+				Pool::of(node)
+					.begin_list
 					.into_iter()
+					.step_by(7)
 					.map(move |begin| (node, begin))
 			})
-			.take(60)
+			.step_by(13)
 			.collect();
-		assert_eq!(sampled.len(), 60);
+		assert!(sampled.len() >= 60, "{}", sampled.len());
 		for (node, begin) in sampled {
-			let miss = landing_miss(&document, &fall, node, begin);
-			assert!(miss <= 0.0, "{node:?} {begin} {miss}");
+			let name = node.attribute("data-flight").unwrap();
+			let miss = landing_miss(&document, &Pool::of(node), name, begin);
+			assert!(miss <= 0.0, "{name} {begin} {miss}");
 		}
 	}
 
-	fn track(animation: Node) -> (Vec<f64>, Vec<f64>) {
-		let value_list: Vec<f64> = animation
-			.attribute("values")
-			.unwrap()
-			.split(';')
-			.map(|pair| pair.split(' ').next().unwrap().parse().unwrap())
-			.collect();
-		let duration = ms(animation, "dur");
-		let last = float(value_list.len() - 1);
-		let key_list: Vec<f64> = animation.attribute("keyTimes").map_or_else(
-			|| {
-				(0..value_list.len())
-					.map(|index| float(index) / last * duration)
-					.collect()
-			},
-			|keys| {
-				keys.split(';')
-					.map(|key| key.parse::<f64>().unwrap() * duration)
-					.collect()
-			},
+	fn assert_starts_in_pouch(start: (f64, f64)) {
+		assert!((start.0 - SLING_X).abs() <= 1.0, "{start:?}");
+		assert!((start.1 - POUCH_Y).abs() <= 1.0, "{start:?}");
+	}
+
+	fn assert_reused_once_hidden(pool: &Pool) {
+		assert!(
+			pool.reuse_gaps().iter().all(|gap| *gap > 0.0),
+			"{:?}",
+			pool.reuse_gaps()
 		);
-		(key_list, value_list)
-	}
-
-	fn track_at(track: &(Vec<f64>, Vec<f64>), at: f64) -> f64 {
-		let (key_list, value_list) = track;
-		let after = key_list.partition_point(|key| *key <= at);
-		if after == key_list.len() {
-			return *value_list.last().unwrap();
-		}
-		let before = after - 1;
-		let part = (at - key_list[before]) / (key_list[after] - key_list[before]);
-		(value_list[after] - value_list[before]).mul_add(part, value_list[before])
 	}
 
 	#[test]
-	fn logos_stay_round_while_columns_slide() {
-		let mut worst: f64 = 0.0;
-		for data in [large(), wanderer(), swap()] {
-			for pace in [PACE, MIN_SECONDS_PER_YEAR] {
-				let svg = render_languages(&data, Variant::Dark, pace);
-				let document = Document::parse(&svg).unwrap();
-				for node in flight_nodes(&document) {
-					let id = node.attribute("href").unwrap().trim_start_matches('#');
-					let upright = tagged(&document, "id", id);
-					let inverse = track(upright.first_element_child().unwrap());
-					let unit: f64 = upright
-						.last_element_child()
-						.unwrap()
-						.attribute("transform")
-						.unwrap()
-						.trim_start_matches("scale(")
-						.split(' ')
-						.next()
-						.unwrap()
-						.parse()
-						.unwrap();
-					let forward = track(reach_of(node));
-					let mut break_list: Vec<f64> =
-						forward.0.iter().chain(&inverse.0).copied().collect();
-					break_list.sort_by(f64::total_cmp);
-					for pair in break_list.windows(2) {
-						for quarter in 0..4 {
-							let at = (pair[1] - pair[0]).mul_add(float(quarter) / 4.0, pair[0]);
-							let skew = (track_at(&forward, at) * track_at(&inverse, at))
-								.mul_add(unit, -1.0)
-								.abs();
-							worst = worst.max(skew);
-						}
-					}
+	fn long_races_keep_the_pouch_and_reuse_hidden_circles() {
+		let data = fixture();
+		let pace = 60.0;
+		assert!(Race::new(&data, pace).clock.duration() > 140_000.0);
+		let svg = render_languages(&data, Variant::Dark, pace);
+		assert_valid_smil(&svg);
+		let document = Document::parse(&svg).unwrap();
+		let mut started = 0;
+		for node in flight_nodes(&document) {
+			let pool = Pool::of(node);
+			assert_reused_once_hidden(&pool);
+			for begin in &pool.begin_list {
+				assert_starts_in_pouch(pool.at(*begin, *begin));
+				assert!(pool.shown(*begin) && pool.shown(pool.vanish(*begin) - 1.0));
+				started += 1;
+			}
+		}
+		assert!(started > 300, "{started}");
+	}
+
+	#[test]
+	fn flights_follow_a_ballistic_arc() {
+		let mut gravity_list: Vec<f64> = Vec::new();
+		let mut checked = 0;
+		for (data, pace) in paced() {
+			let svg = render_languages(&data, Variant::Dark, pace);
+			let document = Document::parse(&svg).unwrap();
+			for node in flight_nodes(&document) {
+				let pool = Pool::of(node);
+				let gravity = pool.gravity();
+				gravity_list.push(gravity);
+				for quarter in 0..=4 {
+					let flown = pool.drop_ms() * float(quarter) / 4.0;
+					let fallen = pool.drop_at(flown).1 - pool.drop_at(0.0).1;
+					assert!(
+						(fallen - gravity * flown * flown / 2.0).abs() <= 0.5,
+						"{fallen}"
+					);
+				}
+				for begin in &pool.begin_list {
+					let sample_list = pool.samples(*begin, 40);
+					let x_list: Vec<(f64, f64)> = sample_list
+						.iter()
+						.map(|(at, point)| (*at, point.0))
+						.collect();
+					assert!(off_line(&x_list) <= 0.5, "{begin} {}", off_line(&x_list));
+					let lifted: Vec<(f64, f64)> = sample_list
+						.iter()
+						.map(|(at, point)| {
+							let flown = at - begin;
+							(*at, (gravity * flown / 2.0).mul_add(-flown, point.1))
+						})
+						.collect();
+					assert!(off_line(&lifted) <= 0.5, "{begin} {}", off_line(&lifted));
+					let (start, end) = (sample_list[0].1, sample_list[40].1);
+					assert_starts_in_pouch(start);
+					let apex = sample_list
+						.iter()
+						.map(|(_, point)| point.1)
+						.fold(f64::INFINITY, f64::min);
+					assert!(apex < start.1.min(end.1) - 8.0, "{apex} {start:?} {end:?}");
+					assert!(sample_list[39].1.1 < end.1, "{begin}");
+					checked += 1;
 				}
 			}
 		}
-		assert!(worst <= 0.02, "{worst}");
-		assert!(worst > 0.0);
+		assert!(checked > 100, "{checked}");
+		let dense = render_languages(&large(), Variant::Dark, PACE);
+		let document = Document::parse(&dense).unwrap();
+		for node in flight_nodes(&document) {
+			let pool = Pool::of(node);
+			for begin in &pool.begin_list {
+				assert_starts_in_pouch(pool.at(*begin, *begin));
+			}
+		}
+		assert!(
+			gravity_list
+				.iter()
+				.all(|gravity| (gravity / gravity_list[0] - 1.0).abs() < 1e-3),
+			"{gravity_list:?}"
+		);
+	}
+
+	#[test]
+	fn in_air_circles_keep_their_path() {
+		let mut moving = 0;
+		for (data, pace) in paced() {
+			let svg = render_languages(&data, Variant::Dark, pace);
+			let document = Document::parse(&svg).unwrap();
+			for node in flight_nodes(&document) {
+				let name = node.attribute("data-flight").unwrap();
+				let column = column(&document, name);
+				let step_list = height_step_list(&document, name);
+				let pool = Pool::of(node);
+				for begin in &pool.begin_list {
+					let landing = contact_ms(&pool, *begin, &step_list);
+					let absorbed = f64::midpoint(landing, pool.vanish(*begin));
+					let target = slide_at(column, absorbed);
+					if (target - slide_at(column, *begin)).abs() < 1.0 {
+						continue;
+					}
+					moving += 1;
+					let x_list: Vec<(f64, f64)> = pool
+						.samples(*begin, 40)
+						.iter()
+						.map(|(at, point)| (*at, point.0))
+						.collect();
+					assert!(off_line(&x_list) <= 0.5, "{begin}");
+					let x = pool.at(absorbed, *begin).0;
+					assert!((x - target).abs() <= 1.5, "{begin} {x} {target}");
+				}
+			}
+		}
+		assert!(moving >= 3, "{moving}");
+	}
+
+	fn ms_between(from: f64, to: f64, step: u32) -> impl Iterator<Item = f64> {
+		(0_u32..100_000)
+			.map(move |index| f64::from(index * step) + from)
+			.take_while(move |at| *at < to)
+	}
+
+	#[test]
+	fn circles_vanish_once_half_sunk() {
+		let mut beside = f64::NEG_INFINITY;
+		let mut absorbed = 0;
+		for (data, pace) in paced() {
+			let svg = render_languages(&data, Variant::Dark, pace);
+			let document = Document::parse(&svg).unwrap();
+			for node in flight_nodes(&document) {
+				let name = node.attribute("data-flight").unwrap();
+				let column = column(&document, name);
+				let half = number(tagged(&document, "data-bar", name), "width") / 2.0;
+				let step_list = height_step_list(&document, name);
+				let pool = Pool::of(node);
+				assert!(pool.static_at().1 >= GROUND + TOKEN_RADIUS, "{name}");
+				assert_reused_once_hidden(&pool);
+				let next_list = pool.begin_list.iter().skip(1).copied();
+				for (begin, next) in pool.begin_list.iter().zip(next_list.chain([f64::INFINITY])) {
+					let contact = contact_ms(&pool, *begin, &step_list);
+					let top = GROUND - height_at(&step_list, contact - 1.0);
+					let centered = pool.reaching(*begin, top);
+					let vanish = pool.vanish(*begin);
+					assert!(
+						vanish >= centered - 1.0 && vanish <= centered + 2.0,
+						"{name} {begin} {centered} {vanish}"
+					);
+					assert!(
+						ms_between(*begin, vanish, 1).all(|at| pool.shown(at)),
+						"{name} {begin}"
+					);
+					for at in ms_between(contact, vanish, 1) {
+						beside =
+							beside.max((pool.at(at, *begin).0 - slide_at(column, at)).abs() - half);
+					}
+					assert!(
+						ms_between(vanish, next.min(begin + 3_000.0), 2).all(|at| {
+							!pool.shown(at) || pool.at(at, *begin).1 >= GROUND + TOKEN_RADIUS
+						}),
+						"{name} {begin}"
+					);
+					absorbed += 1;
+				}
+			}
+		}
+		assert!(absorbed > 100, "{absorbed}");
+		assert!(beside <= 0.0, "{beside}");
+	}
+
+	#[test]
+	fn flying_logos_are_never_scaled() {
+		for data in [large(), wanderer(), swap()] {
+			let svg = render_languages(&data, Variant::Dark, PACE);
+			let document = Document::parse(&svg).unwrap();
+			assert!(
+				document
+					.descendants()
+					.all(|node| node.attribute("type") != Some("scale"))
+			);
+			for node in flight_nodes(&document) {
+				assert!(
+					node.ancestors()
+						.filter_map(|ancestor| ancestor.attribute("transform"))
+						.all(|transform| !transform.contains("scale")),
+					"{node:?}"
+				);
+				assert!(node.attribute("href").unwrap().starts_with("#i"));
+			}
+		}
 	}
 
 	#[test]
@@ -1737,7 +1780,7 @@ mod tests {
 			assert!(!svg.contains("NaN"));
 			let fired: usize = flight_nodes(&document)
 				.into_iter()
-				.map(|node| begin_list(motion(node)).len())
+				.map(|node| Pool::of(node).begin_list.len())
 				.sum();
 			assert_eq!(fired, flights);
 		}
@@ -1958,6 +2001,9 @@ mod tests {
 			document
 				.descendants()
 				.filter(|node| has_slide(*node))
+				.filter(|node| node
+					.children()
+					.all(|child| !child.has_attribute("data-flight")))
 				.count(),
 			data.languages.len()
 		);
@@ -2221,13 +2267,13 @@ mod tests {
 	}
 
 	#[test]
-	fn size_under_1mb_at_520_weeks_16_languages() {
+	fn size_stays_in_budget_at_520_weeks_16_languages() {
 		let data = large();
 		assert!(data.languages.len() >= 16);
 		assert_eq!(data.frames.len(), 520);
 		for variant in [Variant::Dark, Variant::Light] {
 			let svg = render_languages(&data, variant, PACE);
-			assert!(svg.len() < 1_000_000, "{}", svg.len());
+			assert!(svg.len() <= 780_000, "{}", svg.len());
 			assert!(Document::parse(&svg).is_ok());
 		}
 	}

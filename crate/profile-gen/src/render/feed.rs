@@ -281,6 +281,8 @@ mod tests {
 			enter_ms: 0,
 			fire_ms: 0,
 			land_ms,
+			to_x: 0.0,
+			landing_y: 0.0,
 		};
 		let flight_list = [
 			flight(0, 300),
