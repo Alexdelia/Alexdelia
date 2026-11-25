@@ -1,6 +1,9 @@
 use super::clock::{Clock, race_ms};
 use super::feed::{Feed, Shown, feed_list, growth, paired, shown_list, throw_list};
-use super::feeder::{Flight, SLING_X, TUBE_CAPACITY, absorbed_ms, feeder, flight_ms, throw_ms};
+use super::feeder::{
+	FLIGHT_RADIUS, Flight, SLING_X, absorbed_ms, feeder, flight_ms, flights, throw_ms,
+	tube_capacity,
+};
 use super::format::{
 	animate, animate_transform, arrow, compact, discrete, escape, float, key_time, month, num,
 	percent, totals_label, trend_word, whole_ms,
@@ -67,6 +70,7 @@ pub fn render_languages(timeline: &Timeline, variant: Variant, seconds_per_year:
 			.map(|lane| column(lane, &race))
 			.collect::<Vec<_>>()
 			.concat(),
+		flights(&race.flight_list, race.clock.duration()),
 		date_and_totals(timeline, &race.clock),
 		"</svg>".to_owned(),
 	]
@@ -169,7 +173,7 @@ impl<'a> Race<'a> {
 					landing_y(bar_height(feed.fed_before, top_lines)),
 				)
 			}),
-			TUBE_CAPACITY,
+			tube_capacity(),
 		);
 		let clock = Clock::new(frames, race, u32::try_from(-plan.start_ms()).unwrap_or(0));
 		let mut lanes: Vec<Lane> = languages
@@ -222,7 +226,7 @@ fn flight(feed: &Feed, shot: &Shot, lane: &Lane, clock: &Clock) -> Flight {
 }
 
 fn landing_y(bar_height: f64) -> f64 {
-	GROUND - bar_height - TOKEN_RADIUS
+	GROUND - bar_height - FLIGHT_RADIUS
 }
 
 fn height_before(growth: &[(u32, f64)], ms: u32) -> f64 {
@@ -1172,7 +1176,7 @@ mod tests {
 		(0_u32..40_000)
 			.map(|step| f64::from(step).mul_add(0.25, apex))
 			.take_while(|at| *at <= landing + 10.0)
-			.find(|at| pool.at(*at, begin).1 + TOKEN_RADIUS >= GROUND - height_at(step_list, *at))
+			.find(|at| pool.at(*at, begin).1 + FLIGHT_RADIUS >= GROUND - height_at(step_list, *at))
 			.unwrap()
 	}
 
@@ -1213,7 +1217,7 @@ mod tests {
 				.iter()
 				.position(|summary| summary.language.name == name)
 				.unwrap();
-			assert_eq!(node.attribute("href"), Some(format!("#i{index}").as_str()));
+			assert_eq!(node.attribute("href"), Some(format!("#h{index}").as_str()));
 		}
 	}
 
@@ -1524,7 +1528,7 @@ mod tests {
 				let half = number(tagged(&document, "data-bar", name), "width") / 2.0;
 				let step_list = height_step_list(&document, name);
 				let pool = Pool::of(node);
-				assert!(pool.static_at().1 >= GROUND + TOKEN_RADIUS, "{name}");
+				assert!(pool.static_at().1 >= GROUND + FLIGHT_RADIUS, "{name}");
 				assert_reused_once_hidden(&pool);
 				let next_list = pool.begin_list.iter().skip(1).copied();
 				for (begin, next) in pool.begin_list.iter().zip(next_list.chain([f64::INFINITY])) {
@@ -1546,7 +1550,7 @@ mod tests {
 					}
 					assert!(
 						ms_between(vanish, next.min(begin + 3_000.0), 2).all(|at| {
-							!pool.shown(at) || pool.at(at, *begin).1 >= GROUND + TOKEN_RADIUS
+							!pool.shown(at) || pool.at(at, *begin).1 >= GROUND + FLIGHT_RADIUS
 						}),
 						"{name} {begin}"
 					);
@@ -1556,6 +1560,93 @@ mod tests {
 		}
 		assert!(absorbed > 100, "{absorbed}");
 		assert!(beside <= 0.0, "{beside}");
+	}
+
+	fn scale_of(node: Node) -> f64 {
+		node.attribute("transform")
+			.and_then(|transform| transform.strip_prefix("scale("))
+			.map_or(1.0, |scale| {
+				scale
+					.trim_end_matches(')')
+					.split(' ')
+					.next()
+					.unwrap()
+					.parse()
+					.unwrap()
+			})
+	}
+
+	fn drawn_radius(document: &Document, node: Node) -> f64 {
+		let inner = if node.has_tag_name("circle") {
+			return scale_of(node) * number(node, "r");
+		} else if node.has_tag_name("use") {
+			tagged(document, "id", &node.attribute("href").unwrap()[1..])
+		} else {
+			node.first_element_child().unwrap()
+		};
+		scale_of(node) * drawn_radius(document, inner)
+	}
+
+	fn tube_marker_list<'a>(document: &'a Document) -> Vec<Node<'a, 'a>> {
+		document
+			.descendants()
+			.filter(|node| node.has_tag_name("marker"))
+			.collect()
+	}
+
+	#[test]
+	fn flying_circles_are_half_the_legend_logo() {
+		let svg = render_languages(&fixture(), Variant::Dark, PACE);
+		let document = Document::parse(&svg).unwrap();
+		let legend = column(&document, "Rust")
+			.children()
+			.find(|node| node.has_tag_name("use"))
+			.unwrap();
+		let logo = drawn_radius(&document, legend);
+		assert!((logo - TOKEN_RADIUS).abs() < 1e-9, "{logo}");
+		let flight_list = flight_nodes(&document);
+		assert!(flight_list.len() > 2, "{}", flight_list.len());
+		for node in flight_list.into_iter().chain(tube_marker_list(&document)) {
+			let radius = drawn_radius(&document, node);
+			assert!((radius - logo / 2.0).abs() < 1e-9, "{node:?} {radius}");
+		}
+	}
+
+	#[test]
+	fn flying_circles_draw_in_front_of_bars() {
+		for data in [fixture(), large()] {
+			let svg = render_languages(&data, Variant::Dark, PACE);
+			let document = Document::parse(&svg).unwrap();
+			let order: Vec<Node> = document.descendants().collect();
+			let last_bar = order
+				.iter()
+				.rposition(|node| node.has_attribute("data-bar"))
+				.unwrap();
+			let first_flight = order
+				.iter()
+				.position(|node| node.has_attribute("data-flight"))
+				.unwrap();
+			assert!(first_flight > last_bar, "{first_flight} {last_bar}");
+		}
+	}
+
+	#[test]
+	fn tube_holds_what_fits() {
+		let svg = render_languages(&large(), Variant::Dark, PACE);
+		let document = Document::parse(&svg).unwrap();
+		let tube = tagged(&document, "id", "tb").first_element_child().unwrap();
+		let step = 2.0 * drawn_radius(&document, tube_marker_list(&document)[0]);
+		let capacity = (number(tube, "height") / step).floor();
+		let window = tagged(&document, "id", "tw").first_element_child().unwrap();
+		let bottom = number(window, "y");
+		let animation = window.first_element_child().unwrap();
+		let peak = number_list(animation, "values")
+			.iter()
+			.map(|edge| ((bottom - edge) / step).round())
+			.fold(0.0, f64::max);
+		assert!((step - TOKEN_RADIUS).abs() < 1e-9, "{step}");
+		assert!((peak - capacity).abs() < 1e-9, "{peak} {capacity}");
+		assert!(capacity >= 17.0, "{capacity}");
 	}
 
 	#[test]
@@ -1575,7 +1666,7 @@ mod tests {
 						.all(|transform| !transform.contains("scale")),
 					"{node:?}"
 				);
-				assert!(node.attribute("href").unwrap().starts_with("#i"));
+				assert!(node.attribute("href").unwrap().starts_with("#h"));
 			}
 		}
 	}

@@ -5,7 +5,9 @@ use super::languages::{GROUND, TOKEN_RADIUS, WIDTH};
 use crate::theme::Palette;
 
 pub(super) const SLINGSHOT: &str = "#e84e31";
-pub(super) const TUBE_CAPACITY: usize = 11;
+pub(super) const FLIGHT_RADIUS: f64 = TOKEN_RADIUS / 2.0;
+const FLIGHT_SCALE: f64 = FLIGHT_RADIUS / TOKEN_RADIUS;
+const MAX_CAPACITY: u32 = 64;
 
 pub(super) const SLING_X: f64 = 36.0;
 const PRONG: f64 = 13.0;
@@ -26,8 +28,7 @@ const BAND_WIDTH: f64 = 1.5;
 
 const TUBE_TOP: f64 = 16.0;
 const TUBE_BOTTOM: f64 = PRONG_Y - 6.0;
-const TUBE_SCALE: f64 = 0.8;
-const TUBE_RADIUS: f64 = 8.0;
+const TUBE_RADIUS: f64 = FLIGHT_RADIUS;
 const TUBE_STEP: f64 = 2.0 * TUBE_RADIUS;
 const TUBE_WALL: f64 = TUBE_RADIUS + 3.0;
 const TUBE_REST_Y: f64 = TUBE_BOTTOM - TUBE_RADIUS;
@@ -38,8 +39,8 @@ const GRAVITY: f64 = 0.0024;
 const APEX_MARGIN: f64 = 10.0;
 const APEX_PER_PX: f64 = 0.03;
 const APEX_PER_LIFT: f64 = 0.55;
-const RESTING_Y: f64 = GROUND - TOKEN_RADIUS;
-const HIDDEN_Y: f64 = GROUND + TOKEN_RADIUS;
+const RESTING_Y: f64 = GROUND - FLIGHT_RADIUS;
+const HIDDEN_Y: f64 = GROUND + FLIGHT_RADIUS;
 const FREE_FALL_SPLINE: &str = ".333 0 .667 .333";
 const FIRE_KEY_STEPS: f64 = 10_000.0;
 const VANISH_KEY_STEPS: f64 = 1_000.0;
@@ -71,13 +72,18 @@ fn fall_ms(height: f64) -> f64 {
 	(2.0 * height.max(0.0) / GRAVITY).sqrt()
 }
 
+pub(super) fn tube_capacity() -> usize {
+	(1..=MAX_CAPACITY)
+		.take_while(|count| TUBE_STEP.mul_add(f64::from(*count), TUBE_TOP) <= TUBE_BOTTOM)
+		.count()
+}
+
 pub(super) fn feeder(flight_list: &[Flight], duration: f64, colors: Palette) -> String {
 	[
 		defs(flight_list, duration),
 		tube(flight_list, duration, colors),
 		slingshot(),
 		band(flight_list, duration, colors),
-		flights(flight_list, duration),
 	]
 	.concat()
 }
@@ -88,8 +94,8 @@ fn defs(flight_list: &[Flight], duration: f64) -> String {
 		.iter()
 		.map(|lane| {
 			format!(
-				"<marker id=\"m{lane}\" markerUnits=\"userSpaceOnUse\" overflow=\"visible\"><use href=\"#i{lane}\" transform=\"scale({})\"/></marker>",
-				num(TUBE_SCALE, 2)
+				"<g id=\"h{lane}\"><use href=\"#i{lane}\" transform=\"scale({})\"/></g><marker id=\"m{lane}\" markerUnits=\"userSpaceOnUse\" overflow=\"visible\"><use href=\"#h{lane}\"/></marker>",
+				num(FLIGHT_SCALE, 2)
 			)
 		})
 		.collect();
@@ -320,7 +326,7 @@ fn climb(flight: &Flight) -> f64 {
 }
 
 fn sunk_ms(flight: &Flight) -> f64 {
-	f64::from(flight.fire_ms) + sink_ms(climb(flight), flight.landing_y + TOKEN_RADIUS - POUCH_Y)
+	f64::from(flight.fire_ms) + sink_ms(climb(flight), flight.landing_y + FLIGHT_RADIUS - POUCH_Y)
 }
 
 pub(super) fn throw_ms(fire_ms: u32, duration: f64) -> u32 {
@@ -467,7 +473,7 @@ fn circle(pool: &Pool, hide_ms: u32) -> String {
 	};
 	format!(
 		concat!(
-			"<use href=\"#i{lane}\" x=\"{x}\" y=\"{deep}\" data-flight=\"{name}\">",
+			"<use href=\"#h{lane}\" x=\"{x}\" y=\"{deep}\" data-flight=\"{name}\">",
 			"<animateMotion calcMode=\"spline\" keySplines=\"{spline}\" values=\"0 {lift};0 0\" dur=\"{drop}ms\" begin=\"{fires}\" fill=\"freeze\"/>",
 			"<animate attributeName=\"opacity\" calcMode=\"discrete\" values=\"0;1\" dur=\"{hide}ms\" begin=\"{vanishes}\" fill=\"freeze\"/>",
 			"</use>",
@@ -485,7 +491,7 @@ fn circle(pool: &Pool, hide_ms: u32) -> String {
 	)
 }
 
-fn flights(flight_list: &[Flight], duration: f64) -> String {
+pub(super) fn flights(flight_list: &[Flight], duration: f64) -> String {
 	let launch_list: Vec<Launch> = flight_list
 		.iter()
 		.map(|flight| launch(flight, duration))
@@ -560,7 +566,7 @@ mod tests {
 			to_x: SLING_X + dx,
 			..aimed(0, 0, fire_ms, landing_y)
 		};
-		let svg = wrapped(&feeder(&[flight], DURATION, palette(Variant::Dark)));
+		let svg = wrapped(&flights(&[flight], DURATION));
 		let document = Document::parse(&svg).unwrap();
 		let node = document
 			.descendants()
@@ -586,9 +592,10 @@ mod tests {
 	#[test]
 	fn tube_capacity_is_what_fits() {
 		let places = (TUBE_BOTTOM - TUBE_TOP) / TUBE_STEP;
-		assert!(f64::from(u32::try_from(TUBE_CAPACITY).unwrap()) <= places);
-		assert!(f64::from(u32::try_from(TUBE_CAPACITY + 1).unwrap()) > places);
-		assert!(TUBE_SCALE.mul_add(-10.0, TUBE_RADIUS).abs() < 1e-9);
+		let capacity = f64::from(u32::try_from(tube_capacity()).unwrap());
+		assert!(capacity <= places && capacity + 1.0 > places, "{capacity}");
+		assert_eq!(tube_capacity(), 17);
+		assert!(FLIGHT_SCALE.mul_add(-TOKEN_RADIUS, TUBE_RADIUS).abs() < 1e-9);
 	}
 
 	#[test]
@@ -612,7 +619,7 @@ mod tests {
 			previous = (apex, ms);
 		}
 		let (highest, longest) = measured(812.0, 94.0);
-		assert!(highest >= TOKEN_RADIUS, "{highest}");
+		assert!(highest >= FLIGHT_RADIUS, "{highest}");
 		assert!(longest < 700.0, "{longest}");
 	}
 
@@ -665,9 +672,9 @@ mod tests {
 			.filter(|node| node.has_attribute("marker-mid"))
 			.collect();
 		assert_eq!(tape_list.len(), 3);
-		assert_eq!(tape_list[0].attribute("d"), Some("M0 0v-32h0"));
-		assert_eq!(tape_list[1].attribute("d"), Some("M0 -16v-48h0"));
-		assert_eq!(tape_list[2].attribute("d"), Some("M0 -48h0"));
+		assert_eq!(tape_list[0].attribute("d"), Some("M0 0v-20h0"));
+		assert_eq!(tape_list[1].attribute("d"), Some("M0 -10v-30h0"));
+		assert_eq!(tape_list[2].attribute("d"), Some("M0 -30h0"));
 		assert_eq!(tape_list[2].attribute("marker-start"), Some("url(#m2)"));
 	}
 
