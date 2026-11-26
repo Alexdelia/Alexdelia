@@ -26,6 +26,17 @@ const HOT: (u8, u8, u8) = (255, 96, 32);
 const SPARK_COUNT: usize = 9;
 const TRACER_COUNT: usize = 3;
 const CALM: &str = "0";
+const SHAKE_X_SALT: u64 = 1;
+const SHAKE_Y_SALT: u64 = 2;
+const JIGGLE_SALT: u64 = 3;
+const SPARK_SWAY_SALT: u64 = 4;
+const LEFT_FLAME_SALT: u64 = 5;
+const RIGHT_FLAME_SALT: u64 = 6;
+const BOLT_SALT: u64 = 7;
+pub(super) const JITTER_SALT: u64 = 9;
+const SPARK_SALT: u64 = 10;
+const TRACER_SALT: u64 = 20;
+pub(super) const GHOST_SALT: u64 = 30;
 
 pub(super) struct Heat {
 	pub(super) start_ms: u32,
@@ -47,7 +58,7 @@ pub(super) fn hash(index: usize, salt: u64) -> u64 {
 	mixed ^ (mixed >> 31)
 }
 
-fn seeded(index: usize, salt: u64) -> f64 {
+pub(super) fn seeded(index: usize, salt: u64) -> f64 {
 	f64::from(u32::try_from(hash(index, salt) >> 32).unwrap_or(0)) / 4_294_967_296.0
 }
 
@@ -242,8 +253,8 @@ impl Burn {
 			let amplitude = SHAKE_PX * level;
 			format!(
 				"{} {}",
-				num((seeded(index, 1) - 0.5) * amplitude, 1),
-				num((seeded(index, 2) - 0.5) * amplitude, 1)
+				num((seeded(index, SHAKE_X_SALT) - 0.5) * amplitude, 1),
+				num((seeded(index, SHAKE_Y_SALT) - 0.5) * amplitude, 1)
 			)
 		})
 	}
@@ -252,7 +263,7 @@ impl Burn {
 		self.flicker("translate", 0, |index, level| {
 			let side = if index % 2 == 0 { 1.0 } else { -1.0 };
 			num(
-				side * JIGGLE_PX * level * seeded(index, 3).mul_add(0.5, 0.5),
+				side * JIGGLE_PX * level * seeded(index, JIGGLE_SALT).mul_add(0.5, 0.5),
 				1,
 			)
 		})
@@ -303,8 +314,8 @@ impl Burn {
 		format!(
 			"<g data-flames=\"\" opacity=\"0\">{}{}{}</g>",
 			self.fade(FLAME_FROM, 1.0),
-			prong(LEFT_PRONG_X, 5),
-			prong(RIGHT_PRONG_X, 6),
+			prong(LEFT_PRONG_X, LEFT_FLAME_SALT),
+			prong(RIGHT_PRONG_X, RIGHT_FLAME_SALT),
 		)
 	}
 
@@ -320,7 +331,7 @@ impl Burn {
 			num(reach, 1),
 		);
 		let turn = self.flicker("rotate", BOLT_FROM, |index, _| {
-			let choice = usize::try_from(hash(index, 7) % 6).unwrap_or(0);
+			let choice = usize::try_from(hash(index, BOLT_SALT) % 6).unwrap_or(0);
 			BOLT_TURN_LIST[choice].to_owned()
 		});
 		format!(
@@ -341,7 +352,7 @@ impl Burn {
 	pub(super) fn sparks(&self) -> String {
 		let dot_list: Vec<String> = (0..SPARK_COUNT)
 			.map(|index| {
-				let (x, y) = spark_at(index, 10);
+				let (x, y) = spark_at(index, SPARK_SALT);
 				let color = if index % 2 == 0 { "#ffd700" } else { GLOW };
 				format!(
 					"<rect x=\"{}\" y=\"{}\" width=\"1.6\" height=\"1.6\" fill=\"{color}\"/>",
@@ -352,7 +363,7 @@ impl Burn {
 			.collect();
 		let tracer_list: Vec<String> = (0..TRACER_COUNT)
 			.map(|index| {
-				let (x, y) = spark_at(index, 20);
+				let (x, y) = spark_at(index, TRACER_SALT);
 				format!(
 					"<path d=\"M{} {}l{} {}\"/>",
 					num(x, 1),
@@ -371,7 +382,7 @@ impl Burn {
 			x = num(POUCH_X, 1),
 			y = num(POUCH_Y, 1),
 			fade = self.fade(SPARK_FROM, 1.0),
-			turn = self.sway(SPARK_FROM, 4, SPARK_TURN),
+			turn = self.sway(SPARK_FROM, SPARK_SWAY_SALT, SPARK_TURN),
 			dots = dot_list.concat(),
 			tracers = tracer_list.concat(),
 		)
@@ -562,6 +573,31 @@ mod tests {
 				Some(MUTED)
 			);
 		}
+	}
+
+	#[test]
+	fn salts_never_overlap() {
+		let span_list = [
+			(SHAKE_X_SALT, 1),
+			(SHAKE_Y_SALT, 1),
+			(JIGGLE_SALT, 1),
+			(SPARK_SWAY_SALT, 1),
+			(LEFT_FLAME_SALT, 1),
+			(RIGHT_FLAME_SALT, 1),
+			(BOLT_SALT, 1),
+			(JITTER_SALT, 1),
+			(SPARK_SALT, 2),
+			(TRACER_SALT, 2),
+			(GHOST_SALT, 3),
+		];
+		let mut used: Vec<u64> = span_list
+			.iter()
+			.flat_map(|(salt, width)| *salt..salt + width)
+			.collect();
+		let count = used.len();
+		used.sort_unstable();
+		used.dedup();
+		assert_eq!(used.len(), count, "{used:?}");
 	}
 
 	#[test]

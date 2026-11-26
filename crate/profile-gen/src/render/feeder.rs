@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::f64::consts::TAU;
 
 use super::format::{escape, key_time, num, seconds, whole_ms};
-use super::heat::{EMBER_EXTENT, Heat};
+use super::heat::{EMBER_EXTENT, GHOST_SALT, Heat, seeded};
 use super::languages::{GROUND, TOKEN_RADIUS, WIDTH};
 use super::tube::{tube, tube_defs};
 use crate::theme::Palette;
@@ -37,6 +37,14 @@ const MIN_PULL_MS: u32 = 40;
 const SNAP_FORWARD: f64 = 0.35;
 const SNAP_SWING_MS: u32 = 30;
 const SNAP_MS: u32 = 90;
+const GHOST_FADE_MS: u32 = 40;
+const GHOST_LOW: f64 = 0.25;
+const GHOST_SPAN: f64 = 0.15;
+const GHOST_BLUR: f64 = 0.6;
+const GHOST_FLING: f64 = 0.75;
+const SHIMMER_STEPS: u32 = 24;
+const SHIMMER_STEP_MS: u32 = 50;
+const SHIMMER_MS: u32 = SHIMMER_STEP_MS * SHIMMER_STEPS;
 
 pub(super) const GRAVITY: f64 = 0.0024;
 const APEX_MARGIN: f64 = 10.0;
@@ -56,7 +64,9 @@ type Point = (f64, f64);
 enum Pull {
 	Rest,
 	Loaded,
+	Halfway,
 	Forward,
+	Flung,
 }
 
 pub(super) struct Flight {
@@ -95,7 +105,7 @@ pub(super) fn feeder(
 		defs(flight_list, &burn.defs(), duration),
 		format!("<g data-feed=\"\">{}", burn.shake()),
 		tube(flight_list, &burn.jiggle(), duration, colors),
-		band(
+		straps(
 			flight_list,
 			&burn.band_stroke(colors.muted),
 			duration,
@@ -137,9 +147,10 @@ fn defs(flight_list: &[Flight], heat_defs: &str, duration: f64) -> String {
 		})
 		.collect();
 	format!(
-		"<defs>{}{heat_defs}{}<clipPath id=\"kf\"><rect width=\"{}\" height=\"{}\"/></clipPath></defs>",
+		"<defs>{}{heat_defs}{}{}<clipPath id=\"kf\"><rect width=\"{}\" height=\"{}\"/></clipPath></defs>",
 		marker_list.concat(),
 		tube_defs(flight_list, duration),
+		ghost_filter(flight_list),
 		num(WIDTH, 1),
 		num(GROUND, 1),
 	)
@@ -206,8 +217,8 @@ fn wrapped_strap() -> [Point; 4] {
 	]
 }
 
-fn strap(pull: Pull) -> String {
-	let [left_touch, first, second, right_touch] = match pull {
+fn strap_points(pull: Pull) -> [Point; 4] {
+	match pull {
 		Pull::Rest => {
 			let control = (SLING_X, REST_SAG.mul_add(2.0, BAND_END_Y));
 			[
@@ -218,8 +229,22 @@ fn strap(pull: Pull) -> String {
 			]
 		}
 		Pull::Loaded => wrapped_strap(),
+		Pull::Halfway => {
+			let (loaded, flung) = (wrapped_strap(), strap_points(Pull::Flung));
+			std::array::from_fn(|index| toward(loaded[index], flung[index], 0.5))
+		}
 		Pull::Forward => [toward(REST_MIDDLE, (POUCH_X, POUCH_Y), -SNAP_FORWARD); 4],
-	};
+		Pull::Flung => {
+			[(
+				SLING_X,
+				(BAND_END_Y - POUCH_Y).mul_add(GHOST_FLING, BAND_END_Y),
+			); 4]
+		}
+	}
+}
+
+fn strap(pull: Pull) -> String {
+	let [left_touch, first, second, right_touch] = strap_points(pull);
 	let point = |at: Point| format!("{} {}", num(at.0, 1), num(at.1, 1));
 	format!(
 		"M{}L{}C{} {} {}L{}",
@@ -232,33 +257,132 @@ fn strap(pull: Pull) -> String {
 	)
 }
 
-fn band(flight_list: &[Flight], heat_stroke: &str, duration: f64, colors: Palette) -> String {
+fn fire_runs(flight_list: &[Flight]) -> Vec<(u32, u32)> {
+	let mut run_list: Vec<(u32, u32)> = Vec::new();
+	for fire in flight_list.iter().map(|flight| flight.fire_ms) {
+		match run_list.last_mut() {
+			Some(run) if fire - run.1 < SNAP_MS + MIN_PULL_MS => run.1 = fire,
+			_ => run_list.push((fire, fire)),
+		}
+	}
+	run_list
+}
+
+fn held_runs(flight_list: &[Flight]) -> Vec<(u32, u32)> {
+	fire_runs(flight_list)
+		.into_iter()
+		.filter(|(first, last)| last > first)
+		.collect()
+}
+
+fn ghost_filter(flight_list: &[Flight]) -> String {
+	if held_runs(flight_list).is_empty() {
+		return String::new();
+	}
+	format!(
+		"<filter id=\"gb\"><feGaussianBlur stdDeviation=\"{}\"/></filter>",
+		num(GHOST_BLUR, 1)
+	)
+}
+
+fn shimmer(ghost: u64, run_list: &[(u32, u32)]) -> (String, String) {
+	let level = |step: u32| {
+		num(
+			GHOST_SPAN.mul_add(seeded(step as usize, GHOST_SALT + ghost), GHOST_LOW),
+			2,
+		)
+	};
+	let level_list: Vec<String> = (0..SHIMMER_STEPS).map(level).collect();
+	let begin_list: Vec<String> = run_list
+		.iter()
+		.flat_map(|(first, last)| {
+			let end = ghost_end(*first, *last);
+			(0..)
+				.map(move |round| first + round * SHIMMER_MS)
+				.take_while(move |begin| *begin < end)
+				.map(seconds)
+		})
+		.collect();
+	(
+		level(SHIMMER_STEPS - 1),
+		format!(
+			"<animate attributeName=\"opacity\" calcMode=\"discrete\" values=\"{}\" begin=\"{}\" dur=\"{SHIMMER_MS}ms\" fill=\"freeze\"/>",
+			level_list.join(";"),
+			begin_list.join(";"),
+		),
+	)
+}
+
+fn ghost_end(first: u32, last: u32) -> u32 {
+	last.max(first + GHOST_FADE_MS) + GHOST_FADE_MS
+}
+
+fn ghosts(flight_list: &[Flight], duration: f64) -> String {
+	let run_list = held_runs(flight_list);
+	if run_list.is_empty() {
+		return String::new();
+	}
+	let mut point_list: Vec<(u32, &str)> = vec![(0, "0")];
+	for (first, last) in &run_list {
+		let end = ghost_end(*first, *last);
+		point_list.extend([
+			(*first, "0"),
+			(first + GHOST_FADE_MS, "1"),
+			(end - GHOST_FADE_MS, "1"),
+			(end, "0"),
+		]);
+	}
+	point_list.dedup();
+	let value_list: Vec<&str> = point_list
+		.iter()
+		.map(|(_, opacity)| *opacity)
+		.chain(["0"])
+		.collect();
+	let key_list: Vec<String> = point_list
+		.iter()
+		.map(|(ms, _)| key_time(f64::from(*ms).min(duration), duration))
+		.chain([key_time(duration, duration)])
+		.collect();
+	let path_list: Vec<String> = [Pull::Loaded, Pull::Halfway, Pull::Flung]
+		.into_iter()
+		.zip(0..)
+		.map(|(pull, ghost)| {
+			let (last, flicker) = shimmer(ghost, &run_list);
+			format!(
+				"<path d=\"{}\" opacity=\"{last}\">{flicker}</path>",
+				strap(pull)
+			)
+		})
+		.collect();
+	format!(
+		concat!(
+			"<g data-smear=\"\" opacity=\"0\" filter=\"url(#gb)\">",
+			"<animate attributeName=\"opacity\" values=\"{values}\" keyTimes=\"{keys}\" dur=\"{dur}ms\" fill=\"freeze\"/>",
+			"{paths}</g>",
+		),
+		values = value_list.join(";"),
+		keys = key_list.join(";"),
+		dur = num(duration, 0),
+		paths = path_list.concat(),
+	)
+}
+
+fn band(flight_list: &[Flight], duration: f64) -> String {
 	let [rest, loaded, forward] = [Pull::Rest, Pull::Loaded, Pull::Forward].map(strap);
-	let mut fire_list: Vec<u32> = flight_list.iter().map(|flight| flight.fire_ms).collect();
-	fire_list.dedup();
-	let mut free_ms = 0;
-	let mut held = false;
-	let starts_loaded = fire_list.first().is_some_and(|first| *first < MIN_PULL_MS);
+	let run_list = fire_runs(flight_list);
+	let starts_loaded = run_list.first().is_some_and(|run| run.0 < MIN_PULL_MS);
 	let mut point_list: Vec<(u32, &str)> = vec![(0, if starts_loaded { &loaded } else { &rest })];
-	for (index, fire) in fire_list.iter().copied().enumerate() {
-		if !held {
-			let pull_ms = free_ms.max(fire.saturating_sub(PULL_MS));
-			point_list.extend([
-				(pull_ms, point_list[point_list.len() - 1].1),
-				(fire, &loaded),
-			]);
-		}
-		held = fire_list
-			.get(index + 1)
-			.is_some_and(|next| next - fire < SNAP_MS + MIN_PULL_MS);
-		if !held {
-			free_ms = fire + SNAP_MS;
-			point_list.extend([
-				(fire, loaded.as_str()),
-				(fire + SNAP_SWING_MS, &forward),
-				(free_ms, &rest),
-			]);
-		}
+	let mut free_ms = 0;
+	for (first, last) in run_list {
+		let pull_ms = free_ms.max(first.saturating_sub(PULL_MS));
+		free_ms = last + SNAP_MS;
+		point_list.extend([
+			(pull_ms, point_list[point_list.len() - 1].1),
+			(first, &loaded),
+			(last, &loaded),
+			(last + SNAP_SWING_MS, &forward),
+			(free_ms, &rest),
+		]);
 	}
 	point_list.dedup();
 	let value_list: Vec<&str> = point_list
@@ -273,17 +397,28 @@ fn band(flight_list: &[Flight], heat_stroke: &str, duration: f64, colors: Palett
 		.collect();
 	format!(
 		concat!(
-			"<path data-band=\"\" d=\"{rest}\" fill=\"none\" stroke=\"{muted}\" stroke-width=\"{width}\" stroke-linejoin=\"round\">",
-			"<animate attributeName=\"d\" values=\"{values}\" keyTimes=\"{keys}\" dur=\"{dur}ms\" fill=\"freeze\"/>{heat_stroke}",
+			"<path data-band=\"\" d=\"{rest}\">",
+			"<animate attributeName=\"d\" values=\"{values}\" keyTimes=\"{keys}\" dur=\"{dur}ms\" fill=\"freeze\"/>",
 			"</path>",
 		),
 		rest = rest,
-		muted = colors.muted,
-		width = num(BAND_WIDTH, 1),
 		values = value_list.join(";"),
 		keys = key_list.join(";"),
 		dur = num(duration, 0),
+	)
+}
+
+fn straps(flight_list: &[Flight], heat_stroke: &str, duration: f64, colors: Palette) -> String {
+	format!(
+		concat!(
+			"<g data-straps=\"\" fill=\"none\" stroke=\"{muted}\" stroke-width=\"{width}\" stroke-linejoin=\"round\">",
+			"{heat_stroke}{band}{ghosts}</g>",
+		),
+		muted = colors.muted,
+		width = num(BAND_WIDTH, 1),
 		heat_stroke = heat_stroke,
+		band = band(flight_list, duration),
+		ghosts = ghosts(flight_list, duration),
 	)
 }
 
@@ -487,8 +622,8 @@ pub(super) fn flights(flight_list: &[Flight], duration: f64) -> String {
 #[cfg(test)]
 mod tests {
 	use super::super::probe::{
-		Pool as Probe, aimed_flight as aimed, command_list, off_line, path_samples, point_list,
-		test_flight as flight, value_at, wrapped,
+		Pool as Probe, aimed_flight as aimed, command_list, linear_at, off_line, path_samples,
+		point_list, test_flight as flight, value_at, wrapped,
 	};
 	use super::*;
 	use crate::theme::{Variant, palette};
@@ -814,7 +949,7 @@ mod tests {
 		let document = Document::parse(&svg).unwrap();
 		let band = tagged(&document, "data-band");
 		let animation = band.first_element_child().unwrap();
-		let touch = FLIGHT_RADIUS + number(band, "stroke-width") / 2.0;
+		let touch = FLIGHT_RADIUS + number(band.parent().unwrap(), "stroke-width") / 2.0;
 		let mut checked = 0;
 		for node in document
 			.descendants()
@@ -903,12 +1038,274 @@ mod tests {
 			flight(2, 0, 110),
 			flight(3, 0, 600),
 		];
-		let band = band(&flight_list, "", DURATION, palette(Variant::Light));
+		let band = band(&flight_list, DURATION);
 		assert_eq!(band.matches(&strap(Pull::Loaded)).count(), 3, "{band}");
 		assert_eq!(band.matches(&strap(Pull::Forward)).count(), 2, "{band}");
 		assert!(
 			band.contains("keyTimes=\"0;.01;.011;.014;.02;.04;.06;.063;.069;1\""),
 			"{band}"
+		);
+	}
+
+	const CALM_FIRES: [u32; 3] = [500, 2_000, 4_000];
+	const HELD_RUNS: [(u32, u32); 3] = [(1_000, 1_300), (3_000, 3_200), (5_000, 5_020)];
+
+	fn smeared() -> Vec<Flight> {
+		let mut fire_list: Vec<u32> = CALM_FIRES.to_vec();
+		fire_list.extend((0..=10).map(|step| 1_000 + 30 * step));
+		fire_list.extend((0..=4).map(|step| 3_000 + 50 * step));
+		fire_list.extend([5_000, 5_020]);
+		fire_list.sort_unstable();
+		(0..fire_list.len())
+			.zip(fire_list)
+			.map(|(index, fire)| flight(index % 3, 0, fire))
+			.collect()
+	}
+
+	fn ghost_envelope<'a>(ghost: Node<'a, 'a>) -> Node<'a, 'a> {
+		ghost
+			.children()
+			.find(|child| child.attribute("attributeName") == Some("opacity"))
+			.unwrap()
+	}
+
+	fn ghost_paths<'a>(ghost: Node<'a, 'a>) -> Vec<Node<'a, 'a>> {
+		ghost
+			.children()
+			.filter(|child| child.has_tag_name("path"))
+			.collect()
+	}
+
+	#[test]
+	fn ghost_bands_show_only_while_the_band_is_held() {
+		let svg = emitted(&smeared());
+		let document = Document::parse(&svg).unwrap();
+		let ghost = tagged(&document, "data-smear");
+		let envelope = ghost_envelope(ghost);
+		for step in 0..2_000 {
+			let at = 5.0 * f64::from(step);
+			if linear_at(envelope, at) > 0.0 {
+				assert!(
+					HELD_RUNS.iter().any(|(first, last)| {
+						at > f64::from(*first) && at < f64::from(last + SNAP_MS)
+					}),
+					"{at}"
+				);
+			}
+		}
+		for calm in CALM_FIRES {
+			assert!(linear_at(envelope, f64::from(calm)).abs() < 1e-9, "{calm}");
+		}
+		let band = tagged(&document, "data-band");
+		let animation = band.first_element_child().unwrap();
+		let rest = band.attribute("d").unwrap();
+		let key_list: Vec<f64> = animation
+			.attribute("keyTimes")
+			.unwrap()
+			.split(';')
+			.map(|key| key.parse::<f64>().unwrap() * DURATION)
+			.collect();
+		let mut rested = 0;
+		for (key, value) in key_list
+			.iter()
+			.zip(animation.attribute("values").unwrap().split(';'))
+		{
+			if value == rest {
+				assert!(linear_at(envelope, *key).abs() < 1e-9, "{key}");
+				rested += 1;
+			}
+		}
+		assert!(rested > 4, "{rested}");
+		for (first, _) in HELD_RUNS {
+			let peak = f64::from(first + GHOST_FADE_MS);
+			assert!((linear_at(envelope, peak) - 1.0).abs() < 1e-9, "{peak}");
+		}
+		for path in ghost_paths(ghost) {
+			let shimmer = ghost_envelope(path);
+			let level_list: Vec<f64> = shimmer
+				.attribute("values")
+				.unwrap()
+				.split(';')
+				.map(|value| value.parse().unwrap())
+				.collect();
+			assert!(
+				level_list.iter().all(|level| (0.2..=0.45).contains(level)),
+				"{level_list:?}"
+			);
+			assert!(
+				level_list
+					.windows(2)
+					.any(|pair| (pair[0] - pair[1]).abs() > 1e-9)
+			);
+			let begin_list: Vec<f64> = shimmer
+				.attribute("begin")
+				.unwrap()
+				.split(';')
+				.map(|begin| begin.trim_end_matches('s').parse::<f64>().unwrap() * 1_000.0)
+				.collect();
+			for (first, _) in HELD_RUNS {
+				assert!(begin_list.contains(&f64::from(first)), "{begin_list:?}");
+			}
+		}
+	}
+
+	#[test]
+	fn ghost_bands_span_pull_to_forward() {
+		let svg = emitted(&smeared());
+		let document = Document::parse(&svg).unwrap();
+		let ghost = tagged(&document, "data-smear");
+		let shape_list: Vec<&str> = ghost_paths(ghost)
+			.iter()
+			.map(|path| path.attribute("d").unwrap())
+			.collect();
+		assert_eq!(shape_list.len(), 3);
+		let animation = tagged(&document, "data-band")
+			.first_element_child()
+			.unwrap();
+		assert_eq!(
+			shape_list[0],
+			value_at(animation, f64::from(HELD_RUNS[0].0))
+		);
+		let layout = |shape: &str| -> (String, Vec<(f64, f64)>) {
+			let command_list = command_list(shape);
+			(
+				command_list.iter().map(|(letter, _)| *letter).collect(),
+				command_list
+					.iter()
+					.flat_map(|(_, number_list)| point_list(number_list))
+					.collect(),
+			)
+		};
+		let (pulled, forward, halfway) = (
+			layout(shape_list[0]),
+			layout(shape_list[2]),
+			layout(shape_list[1]),
+		);
+		for (letters, _) in [&pulled, &forward, &halfway] {
+			assert_eq!(letters, "MLCL");
+		}
+		let [left_end, right_end] = ends(shape_list[2]);
+		let swung = forward.1[1];
+		assert!(
+			forward.1[1..5].iter().all(|point| *point == swung),
+			"{forward:?}"
+		);
+		assert!(swung.1 < left_end.1 - 5.0, "{swung:?}");
+		assert!(swung.0 > left_end.0 && swung.0 < right_end.0, "{swung:?}");
+		for ((from, to), middle) in pulled.1.iter().zip(&forward.1).zip(&halfway.1) {
+			assert!(
+				distance(
+					(f64::midpoint(from.0, to.0), f64::midpoint(from.1, to.1)),
+					*middle
+				) < 0.1,
+				"{from:?} {to:?} {middle:?}"
+			);
+		}
+		let filter_list: Vec<Node> = document
+			.descendants()
+			.filter(|node| node.has_tag_name("filter"))
+			.collect();
+		assert_eq!(filter_list.len(), 1);
+		let filter = filter_list[0];
+		assert_eq!(
+			ghost.attribute("filter"),
+			Some(format!("url(#{})", filter.attribute("id").unwrap()).as_str())
+		);
+		assert!(
+			filter
+				.children()
+				.any(|child| child.has_tag_name("feGaussianBlur"))
+		);
+		let order = |key: &str| {
+			document
+				.descendants()
+				.position(|node| node.has_attribute(key))
+				.unwrap()
+		};
+		assert!(order("data-band") < order("data-smear"));
+		assert!(order("data-smear") < order("data-slingshot"));
+	}
+
+	#[test]
+	fn ghost_bands_end_calm() {
+		let svg = emitted(&smeared());
+		assert_eq!(svg, emitted(&smeared()));
+		let document = Document::parse(&svg).unwrap();
+		let ghost = tagged(&document, "data-smear");
+		assert_eq!(ghost.attribute("opacity"), Some("0"));
+		let envelope = ghost_envelope(ghost);
+		assert_eq!(envelope.attribute("fill"), Some("freeze"));
+		assert_eq!(
+			envelope.attribute("values").unwrap().rsplit(';').next(),
+			Some("0")
+		);
+		assert!(linear_at(envelope, DURATION).abs() < 1e-9);
+		let calm_only: Vec<Flight> = CALM_FIRES.iter().map(|fire| flight(0, 0, *fire)).collect();
+		for flight_list in [calm_only, Vec::new()] {
+			let svg = emitted(&flight_list);
+			assert!(!svg.contains("data-smear"), "{svg}");
+		}
+	}
+
+	fn filled_runs(shots_per_run: u32) -> Vec<Flight> {
+		HELD_RUNS
+			.iter()
+			.flat_map(|(first, last)| {
+				let step = (last - first) / (shots_per_run - 1);
+				(0..shots_per_run).map(move |shot| {
+					flight(
+						0,
+						0,
+						if shot + 1 == shots_per_run {
+							*last
+						} else {
+							first + step * shot
+						},
+					)
+				})
+			})
+			.collect()
+	}
+
+	#[test]
+	fn ghost_cost_does_not_grow_with_shots() {
+		let (few, many) = (filled_runs(5), filled_runs(50));
+		assert_eq!(10 * few.len(), many.len());
+		let markup = ghosts(&few, DURATION);
+		assert!(markup.contains("data-smear"));
+		assert_eq!(markup, ghosts(&many, DURATION));
+	}
+
+	#[test]
+	fn band_and_ghosts_share_one_heat_stroke() {
+		let heat = Heat {
+			start_ms: 0,
+			sample_list: vec![1_000; 120],
+		};
+		let svg = wrapped(&feeder(&smeared(), &heat, DURATION, palette(Variant::Dark)));
+		let document = Document::parse(&svg).unwrap();
+		let stroke_list: Vec<Node> = document
+			.descendants()
+			.filter(|node| node.attribute("attributeName") == Some("stroke"))
+			.collect();
+		assert_eq!(stroke_list.len(), 1);
+		let shared = stroke_list[0].parent().unwrap();
+		for key in ["data-band", "data-smear"] {
+			let node = tagged(&document, key);
+			assert_eq!(node.parent(), Some(shared), "{key}");
+			assert_eq!(node.attribute("stroke"), None, "{key}");
+			assert_eq!(node.attribute("stroke-width"), None, "{key}");
+		}
+		assert_eq!(
+			shared.attribute("stroke"),
+			Some(palette(Variant::Dark).muted)
+		);
+		assert!(
+			stroke_list[0]
+				.attribute("values")
+				.unwrap()
+				.split(';')
+				.any(|value| value != palette(Variant::Dark).muted)
 		);
 	}
 }

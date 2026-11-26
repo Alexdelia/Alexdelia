@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use super::feeder::{FLIGHT_RADIUS, FREE_FALL_SPLINE, Flight, GRAVITY, PRONG_Y, SLING_X};
 use super::format::{discrete, float, num, seconds, whole_ms};
-use super::heat::hash;
+use super::heat::{JITTER_SALT, hash};
 use super::languages::WIDTH;
 use crate::theme::Palette;
 
@@ -19,7 +19,6 @@ const BOUNCE_OVERSHOOT: f64 = 1.5;
 const BOUNCE_SPLINE: &str = ".5 0 1 1;0 0 .5 1";
 const DROP_START_Y: f64 = TUBE_TOP - TUBE_RADIUS;
 const DROP_SLACK: f64 = 0.5;
-const JITTER_SALT: u64 = 9;
 
 pub(super) fn tube_capacity() -> usize {
 	(1..=MAX_CAPACITY)
