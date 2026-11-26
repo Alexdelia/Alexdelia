@@ -70,6 +70,22 @@
         "type": "github"
       }
     },
+    "linguist": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1795693433,
+        "narHash": "sha256-0prDBHasRDywwALkc70WCl0LrVFkcutulnTEtLHWC4U=",
+        "owner": "github-linguist",
+        "repo": "linguist",
+        "rev": "f6e9adfc7240b5b1f098bc9d4722cb6b3b210049",
+        "type": "github"
+      },
+      "original": {
+        "owner": "github-linguist",
+        "repo": "linguist",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1795370043,
@@ -91,6 +107,7 @@
         "crane": "crane",
         "flake-utils": "flake-utils",
         "git-hooks": "git-hooks",
+        "linguist": "linguist",
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay"
       }

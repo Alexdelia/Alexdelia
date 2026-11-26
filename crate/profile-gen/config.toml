@@ -9,3 +9,22 @@ exclude_repos = []
 top_n = 16
 max_frames = 520
 seconds_per_year = 5
+
+[languages]
+include = ["JSON", "Markdown", "RON", "SQL", "TOML", "XML", "YAML"]
+exclude = []
+
+[languages.ambiguous]
+".d" = "D"
+".frag" = "GLSL"
+".fs" = "F#"
+".h" = "C"
+".json" = "JSON"
+".m" = "Objective-C"
+".md" = "Markdown"
+".ml" = "OCaml"
+".nu" = "Nushell"
+".pl" = "Perl"
+".rs" = "Rust"
+".sql" = "SQL"
+".yaml" = "YAML"

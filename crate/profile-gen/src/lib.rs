@@ -119,7 +119,7 @@ mod tests {
 		let config = dir.path().join("config.toml");
 		std::fs::write(
 			&config,
-			"owner = \"o\"\nauthors = [\"a@example.com\"]\nexclude_repos = []\ntop_n = 8\nmax_frames = 150\nseconds_per_year = 5\n",
+			"owner = \"o\"\nauthors = [\"a@example.com\"]\nexclude_repos = []\ntop_n = 8\nmax_frames = 150\nseconds_per_year = 5\n[languages]\ninclude = []\nexclude = []\nambiguous = {}\n",
 		)
 		.unwrap();
 		std::fs::write(dir.path().join(PRIVATE_FILE), "not json").unwrap();

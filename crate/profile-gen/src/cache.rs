@@ -5,12 +5,13 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use twox_hash::XxHash3_64;
 
 use crate::attributes::attributes_blob;
+use crate::config::LanguageLists;
 use crate::error::Result;
 use crate::git;
 use crate::history::{Week, Weeks, weekly_added};
-use crate::language::{LANGUAGE_LIST, language_by_name};
+use crate::language::{Detector, LINGUIST_DATA, language_by_name};
 
-const RULES_VERSION: u32 = 1;
+const RULES_VERSION: u32 = 2;
 
 type LanguageLines = BTreeMap<&'static str, u64>;
 
@@ -139,18 +140,35 @@ fn parse_language<E: serde::de::Error>(name: &str) -> std::result::Result<&'stat
 }
 
 #[must_use]
-pub fn rules_hash(authors: &[String], exclude_repos: &[String]) -> String {
+pub fn rules_hash(authors: &[String], exclude_repos: &[String], lists: &LanguageLists) -> String {
+	hash_rules(LINGUIST_DATA, authors, exclude_repos, lists)
+}
+
+fn hash_rules(
+	linguist_data: &str,
+	authors: &[String],
+	exclude_repos: &[String],
+	lists: &LanguageLists,
+) -> String {
 	let mut bytes = Vec::new();
 	bytes.extend(RULES_VERSION.to_le_bytes());
-	for list in [authors, exclude_repos] {
+	push_text(&mut bytes, linguist_data);
+	let ambiguous: Vec<String> = lists
+		.ambiguous
+		.iter()
+		.flat_map(|(key, name)| [key.clone(), name.clone()])
+		.collect();
+	for list in [
+		authors,
+		exclude_repos,
+		&lists.include,
+		&lists.exclude,
+		&ambiguous,
+	] {
 		push_text(&mut bytes, &list.len().to_string());
 		for entry in list {
 			push_text(&mut bytes, entry);
 		}
-	}
-	for language in LANGUAGE_LIST {
-		push_text(&mut bytes, language.name);
-		push_text(&mut bytes, language.color);
 	}
 	format!("{:016x}", XxHash3_64::oneshot(&bytes))
 }
@@ -176,7 +194,13 @@ fn is_ancestor_of_head(repo: &Path, sha: &str) -> bool {
 		.is_ok_and(|output| output.status.success())
 }
 
-pub fn update(cache: &mut Cache, name: &str, repo: &Path, authors: &[String]) -> Result<()> {
+pub fn update(
+	cache: &mut Cache,
+	name: &str,
+	repo: &Path,
+	authors: &[String],
+	detector: &Detector,
+) -> Result<()> {
 	let blob = attributes_blob(repo)?;
 	let reusable = match cache.repos.remove(name) {
 		Some(previous)
@@ -188,7 +212,7 @@ pub fn update(cache: &mut Cache, name: &str, repo: &Path, authors: &[String]) ->
 		_ => None,
 	};
 	let since = reusable.as_ref().map(|previous| previous.last_sha.as_str());
-	let (added, head) = weekly_added(repo, since, authors)?;
+	let (added, head) = weekly_added(repo, since, authors, detector)?;
 	let mut weeks = reusable.map_or_default(|previous| previous.weeks);
 	add_weeks(&mut weeks, &added);
 	if let Some(last_sha) = head {
@@ -255,8 +279,9 @@ pub fn usage(cache: &Cache) -> Usage {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::fixture::FixtureRepo;
+	use crate::fixture::{FixtureRepo, shipped_detector};
 	use jiff::civil::Date;
+	use std::collections::BTreeMap;
 
 	const WEEK_ONE_TS: i64 = 1_795_392_000;
 	const WEEK_SECONDS: i64 = 7 * 24 * 3600;
@@ -279,12 +304,14 @@ mod tests {
 	}
 
 	fn fresh_weeks(repo: &FixtureRepo) -> Weeks {
-		weekly_added(repo.path(), None, &me()).unwrap().0
+		weekly_added(repo.path(), None, &me(), &shipped_detector())
+			.unwrap()
+			.0
 	}
 
 	fn cached(repo: &FixtureRepo) -> Cache {
 		let mut cache = Cache::empty("h");
-		update(&mut cache, "r", repo.path(), &me()).unwrap();
+		update(&mut cache, "r", repo.path(), &me(), &shipped_detector()).unwrap();
 		cache
 	}
 
@@ -298,7 +325,7 @@ mod tests {
 
 		repo.commit(ME, WEEK_ONE_TS + WEEK_SECONDS, &[("b.rs", Some(&lines(3)))]);
 		repo.commit(ME, WEEK_ONE_TS + 1, &[("c.c", Some(&lines(2)))]);
-		update(&mut cache, "r", repo.path(), &me()).unwrap();
+		update(&mut cache, "r", repo.path(), &me(), &shipped_detector()).unwrap();
 
 		assert_eq!(cache.repos["r"].weeks, fresh_weeks(&repo));
 		assert_eq!(cache.repos["r"].last_sha, repo.head());
@@ -312,7 +339,7 @@ mod tests {
 		let mut cache = cached(&repo);
 		let before = cache.clone();
 
-		update(&mut cache, "r", repo.path(), &me()).unwrap();
+		update(&mut cache, "r", repo.path(), &me(), &shipped_detector()).unwrap();
 
 		assert_eq!(cache, before);
 	}
@@ -325,7 +352,7 @@ mod tests {
 		let mut cache = cached(&repo);
 
 		repo.amend(ME, WEEK_ONE_TS + 2, &[("b.rs", &lines(8))]);
-		update(&mut cache, "r", repo.path(), &me()).unwrap();
+		update(&mut cache, "r", repo.path(), &me(), &shipped_detector()).unwrap();
 
 		assert_eq!(cache.repos["r"].weeks, fresh_weeks(&repo));
 		assert_eq!(
@@ -342,7 +369,7 @@ mod tests {
 		let mut cache = cached(&repo);
 		cache.repos.get_mut("r").unwrap().last_sha = "0".repeat(40);
 
-		update(&mut cache, "r", repo.path(), &me()).unwrap();
+		update(&mut cache, "r", repo.path(), &me(), &shipped_detector()).unwrap();
 
 		assert_eq!(cache.repos["r"].weeks, fresh_weeks(&repo));
 		assert_eq!(cache.repos["r"].last_sha, repo.head());
@@ -364,7 +391,7 @@ mod tests {
 			WEEK_ONE_TS + 2,
 			&[(".gitattributes", Some("libft/** linguist-vendored\n"))],
 		);
-		update(&mut cache, "r", repo.path(), &me()).unwrap();
+		update(&mut cache, "r", repo.path(), &me(), &shipped_detector()).unwrap();
 
 		assert_eq!(cache.repos["r"].weeks[&week(0)], bucket(&[("Rust", 1)]));
 		assert_eq!(cache.repos["r"].weeks, fresh_weeks(&repo));
@@ -384,7 +411,7 @@ mod tests {
 			},
 		);
 
-		update(&mut cache, "r", repo.path(), &me()).unwrap();
+		update(&mut cache, "r", repo.path(), &me(), &shipped_detector()).unwrap();
 
 		assert!(cache.repos.is_empty());
 	}
@@ -393,21 +420,74 @@ mod tests {
 	fn update_fails_outside_a_repository() {
 		let dir = tempfile::TempDir::new().unwrap();
 		let mut cache = Cache::empty("h");
-		assert!(update(&mut cache, "r", dir.path(), &me()).is_err());
+		assert!(update(&mut cache, "r", dir.path(), &me(), &shipped_detector()).is_err());
+	}
+
+	fn no_lists() -> LanguageLists {
+		LanguageLists::default()
 	}
 
 	#[test]
 	fn rules_hash_depends_on_every_input() {
-		let base = rules_hash(&me(), &["x".to_owned()]);
-		assert_eq!(base, rules_hash(&me(), &["x".to_owned()]));
-		assert_ne!(base, rules_hash(&["you@x".to_owned()], &["x".to_owned()]));
-		assert_ne!(base, rules_hash(&me(), &["y".to_owned()]));
-		assert_ne!(base, rules_hash(&[], &[]));
+		let hash = |authors: &[String], exclude_repos: &[String]| {
+			rules_hash(authors, exclude_repos, &no_lists())
+		};
+		let base = hash(&me(), &["x".to_owned()]);
+		assert_eq!(base, hash(&me(), &["x".to_owned()]));
+		assert_ne!(base, hash(&["you@x".to_owned()], &["x".to_owned()]));
+		assert_ne!(base, hash(&me(), &["y".to_owned()]));
+		assert_ne!(base, hash(&[], &[]));
 		assert_ne!(
-			rules_hash(&["a".to_owned(), "b".to_owned()], &[]),
-			rules_hash(&["a".to_owned()], &["b".to_owned()])
+			hash(&["a".to_owned(), "b".to_owned()], &[]),
+			hash(&["a".to_owned()], &["b".to_owned()])
 		);
 		assert_eq!(base.len(), 16);
+	}
+
+	#[test]
+	fn rules_hash_changes_with_linguist_data_or_lists() {
+		let names =
+			|list: &[&str]| -> Vec<String> { list.iter().map(|name| (*name).to_owned()).collect() };
+		let ambiguous = |name: &str| BTreeMap::from([(".h".to_owned(), name.to_owned())]);
+		let base = rules_hash(&me(), &[], &no_lists());
+		assert_eq!(base, hash_rules(LINGUIST_DATA, &me(), &[], &no_lists()));
+		assert_ne!(base, hash_rules("{}", &me(), &[], &no_lists()));
+		let variants = [
+			LanguageLists {
+				include: names(&["JSON"]),
+				..no_lists()
+			},
+			LanguageLists {
+				exclude: names(&["JSON"]),
+				..no_lists()
+			},
+			LanguageLists {
+				include: names(&["JSON", "TOML"]),
+				..no_lists()
+			},
+			LanguageLists {
+				include: names(&["JSON"]),
+				exclude: names(&["TOML"]),
+				..no_lists()
+			},
+			LanguageLists {
+				ambiguous: ambiguous("C"),
+				..no_lists()
+			},
+			LanguageLists {
+				ambiguous: ambiguous("C++"),
+				..no_lists()
+			},
+		];
+		let mut hashes: Vec<String> = variants
+			.iter()
+			.map(|lists| rules_hash(&me(), &[], lists))
+			.chain([base])
+			.collect();
+		let count = hashes.len();
+		hashes.sort();
+		hashes.dedup();
+		assert_eq!(hashes.len(), count);
 	}
 
 	#[test]
@@ -535,7 +615,7 @@ mod tests {
 		std::fs::remove_file(repo.path().join(".git/objects").join(fan_out).join(rest)).unwrap();
 		let mut cache = Cache::empty("h");
 
-		assert!(update(&mut cache, "r", repo.path(), &me()).is_err());
+		assert!(update(&mut cache, "r", repo.path(), &me(), &shipped_detector()).is_err());
 	}
 
 	#[test]

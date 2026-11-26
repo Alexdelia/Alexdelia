@@ -5,6 +5,7 @@ use crate::cache::{self, Usage};
 use crate::config::Config;
 use crate::error::Result;
 use crate::github::{Fetch, list_public, sync_clone};
+use crate::language::Detector;
 use crate::render::languages::render_languages;
 use crate::theme::Variant;
 use crate::timeline::timeline;
@@ -29,17 +30,18 @@ fn read_private(path: &Path) -> Result<Usage> {
 
 fn refresh_cache(
 	config: &Config,
+	detector: &Detector,
 	fetch: &impl Fetch,
 	token: Option<&str>,
 	work: &Path,
 	cache_path: &Path,
 ) -> Result<cache::Cache> {
-	let rules_hash = cache::rules_hash(&config.authors, &config.exclude_repos);
+	let rules_hash = cache::rules_hash(&config.authors, &config.exclude_repos, &config.languages);
 	let mut cache = cache::load(cache_path, &rules_hash)?;
 	let repos = list_public(fetch, &config.owner, token, &config.exclude_repos)?;
 	for repo in &repos {
 		let clone = sync_clone(repo, work)?;
-		cache::update(&mut cache, &repo.name, &clone, &config.authors)?;
+		cache::update(&mut cache, &repo.name, &clone, &config.authors, detector)?;
 	}
 	let names: BTreeSet<String> = repos.into_iter().map(|repo| repo.name).collect();
 	cache::retain(&mut cache, &names);
@@ -52,11 +54,12 @@ pub fn render(
 	token: Option<&str>,
 	paths: &Paths,
 ) -> Result<()> {
+	let detector = Detector::new(&config.languages)?;
 	let private = read_private(&paths.private)?;
 	let cache_dir = paths.out.join(CACHE_DIR);
 	std::fs::create_dir_all(&cache_dir)?;
 	let cache_path = cache_dir.join(CACHE_FILE);
-	let cache = refresh_cache(config, fetch, token, &paths.work, &cache_path)?;
+	let cache = refresh_cache(config, &detector, fetch, token, &paths.work, &cache_path)?;
 	cache::save(&cache, &cache_path)?;
 
 	let usage = cache::usage(&cache).merge(private);
@@ -77,7 +80,7 @@ pub fn render(
 mod tests {
 	use super::*;
 	use crate::cache::Cache;
-	use crate::fixture::FixtureRepo;
+	use crate::fixture::{FixtureRepo, shipped_lists};
 	use crate::git;
 	use tempfile::TempDir;
 
@@ -118,6 +121,7 @@ mod tests {
 			top_n: 8,
 			max_frames: 150,
 			seconds_per_year: 5.0,
+			languages: shipped_lists(),
 		}
 	}
 
@@ -254,6 +258,18 @@ mod tests {
 				.to_owned(),
 		);
 		assert!(render(&config(), &broken, None, &paths).is_err());
+	}
+
+	#[test]
+	fn render_rejects_language_unknown_to_linguist() {
+		let alpha = fixture("a.rs", "fn a() {}\n");
+		let dir = TempDir::new().unwrap();
+		let mut config = config();
+		config.languages.include.push("Nope".to_owned());
+		let error = render(&config, &listing(&[("alpha", &alpha)]), None, &paths(&dir))
+			.unwrap_err()
+			.to_string();
+		assert!(error.contains("Nope"), "{error}");
 	}
 
 	#[test]

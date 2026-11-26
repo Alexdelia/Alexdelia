@@ -1,7 +1,19 @@
 use std::path::Path;
 
+use crate::config::{Config, LanguageLists};
 use crate::git;
+use crate::language::Detector;
 use tempfile::TempDir;
+
+pub(crate) fn shipped_lists() -> LanguageLists {
+	Config::parse(include_str!("../config.toml"))
+		.unwrap()
+		.languages
+}
+
+pub(crate) fn shipped_detector() -> Detector {
+	Detector::new(&shipped_lists()).unwrap()
+}
 
 pub(crate) struct FixtureRepo {
 	dir: TempDir,

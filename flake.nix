@@ -13,6 +13,10 @@
       url = "github:cachix/git-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    linguist = {
+      url = "github:github-linguist/linguist";
+      flake = false;
+    };
   };
 
   outputs =
@@ -23,6 +27,7 @@
       rust-overlay,
       crane,
       git-hooks,
+      linguist,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -43,8 +48,13 @@
           name = "source";
         };
 
+        linguistLanguages = pkgs.runCommand "linguist-languages.json" {
+          nativeBuildInputs = [ pkgs.yq-go ];
+        } "yq --output-format json ${linguist}/lib/linguist/languages.yml > $out";
+
         baseBuild = {
           inherit src;
+          LINGUIST_LANGUAGES = linguistLanguages;
           pname = "profile-gen";
           version = (fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
           strictDeps = true;
@@ -118,6 +128,7 @@
 
         devShells.default = pkgs.mkShell {
           inherit (hook) shellHook;
+          LINGUIST_LANGUAGES = linguistLanguages;
           packages =
             with pkgs;
             [

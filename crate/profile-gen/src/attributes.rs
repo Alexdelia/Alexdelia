@@ -5,13 +5,13 @@ use std::process::{Child, Output, Stdio};
 
 use crate::error::Result;
 use crate::git;
-use crate::language::{Language, language_by_name};
+use crate::language::canonical_name;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Attribute {
 	Default,
 	Skip,
-	Language(Language),
+	Language(&'static str),
 }
 
 const ATTRIBUTE_NAMES: [&str; 5] = [
@@ -72,7 +72,7 @@ fn merge(current: Attribute, name: &str, value: &str) -> Attribute {
 		return Attribute::Skip;
 	}
 	if name == "linguist-language" {
-		return language_by_name(value).map_or(current, Attribute::Language);
+		return canonical_name(value).map_or(current, Attribute::Language);
 	}
 	current
 }
@@ -122,7 +122,7 @@ mod tests {
 	use super::*;
 	use crate::fixture::FixtureRepo;
 
-	const GITATTRIBUTES: &str = "libft/** linguist-vendored\ngen/** linguist-generated\ndocs/** linguist-documentation\n*.inc linguist-language=C\nx.rs -linguist-detectable\n";
+	const GITATTRIBUTES: &str = "libft/** linguist-vendored\ngen/** linguist-generated\ndocs/** linguist-documentation\n*.inc linguist-language=c\nx.rs -linguist-detectable\n";
 
 	fn path_list(list: &[&str]) -> Vec<String> {
 		list.iter().map(|path| (*path).to_owned()).collect()
@@ -151,10 +151,7 @@ mod tests {
 		for skipped in ["libft/a.c", "gen/b.c", "docs/c.c", "x.rs"] {
 			assert_eq!(map[skipped], Attribute::Skip, "{skipped}");
 		}
-		assert_eq!(
-			map["m.inc"],
-			Attribute::Language(language_by_name("C").unwrap())
-		);
+		assert_eq!(map["m.inc"], Attribute::Language("C"));
 		assert_eq!(map["src/d.c"], Attribute::Default);
 	}
 

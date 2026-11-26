@@ -37,7 +37,7 @@ fn path_data(svg: &'static str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::language::{LANGUAGE_LIST, language_by_name};
+	use crate::language::language_by_name;
 
 	#[test]
 	fn every_icon_belongs_to_a_known_language() {
@@ -62,13 +62,16 @@ mod tests {
 
 	#[test]
 	fn languages_without_icon_fall_back() {
-		let missing: Vec<&str> = LANGUAGE_LIST
-			.iter()
-			.map(|language| language.name)
-			.filter(|name| icon_path(name).is_none())
-			.collect();
-		assert_eq!(missing, ["Makefile", "Boo", "Assembly"]);
-		assert_eq!(icon_path("Unknown"), None);
+		for name in [
+			"Makefile",
+			"Boo",
+			"Assembly",
+			"Perl",
+			"Linker Script",
+			"Unknown",
+		] {
+			assert_eq!(icon_path(name), None, "{name}");
+		}
 	}
 
 	#[test]

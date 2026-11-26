@@ -62,6 +62,50 @@ pub(crate) fn head_sha(repo: &Path) -> Result<Option<String>> {
 	}
 }
 
+pub(crate) fn unquote_path(printed: &str) -> String {
+	let path = printed.split_once('\t').map_or(printed, |(path, _)| path);
+	path.strip_prefix('"')
+		.and_then(|quoted| quoted.strip_suffix('"'))
+		.map_or_else(|| path.to_owned(), unescape)
+}
+
+fn unescape(quoted: &str) -> String {
+	let mut bytes = Vec::new();
+	let mut rest = quoted.as_bytes();
+	while let Some((&byte, tail)) = rest.split_first() {
+		rest = tail;
+		if byte != b'\\' {
+			bytes.push(byte);
+		} else if let Some(value) = rest.get(..3).and_then(octal) {
+			bytes.push(value);
+			rest = rest.get(3..).unwrap_or_default();
+		} else if let Some((&escaped, tail)) = rest.split_first() {
+			bytes.push(control_byte(escaped));
+			rest = tail;
+		}
+	}
+	String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn octal(digits: &[u8]) -> Option<u8> {
+	std::str::from_utf8(digits)
+		.ok()
+		.and_then(|text| u8::from_str_radix(text, 8).ok())
+}
+
+const fn control_byte(escaped: u8) -> u8 {
+	match escaped {
+		b'a' => 0x07,
+		b'b' => 0x08,
+		b't' => b'\t',
+		b'n' => b'\n',
+		b'v' => 0x0b,
+		b'f' => 0x0c,
+		b'r' => b'\r',
+		other => other,
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -101,5 +145,22 @@ mod tests {
 		let command = command(Path::new("."));
 		assert!(is_set_to(&command, "GIT_CONFIG_GLOBAL", "/dev/null"));
 		assert!(is_set_to(&command, "GIT_CONFIG_NOSYSTEM", "1"));
+	}
+
+	#[test]
+	fn printed_paths_are_unquoted() {
+		let cases = [
+			("plain.patch", "plain.patch"),
+			("a b.patch\t", "a b.patch"),
+			("b/a.c\t2026-01-01 10:00", "b/a.c"),
+			(r#""\303\251t\303\251.patch""#, "\u{e9}t\u{e9}.patch"),
+			(r#""q\"t\\.patch""#, "q\"t\\.patch"),
+			(r#""\a\b\t\n\v\f\r""#, "\u{7}\u{8}\t\n\u{b}\u{c}\r"),
+			(r#""trailing\""#, "trailing"),
+			("\"", "\""),
+		];
+		for (printed, expected) in cases {
+			assert_eq!(unquote_path(printed), expected, "{printed}");
+		}
 	}
 }

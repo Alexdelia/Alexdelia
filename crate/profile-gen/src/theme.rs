@@ -37,7 +37,7 @@ pub const fn palette(variant: Variant) -> Palette {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::language::LANGUAGE_LIST;
+	use crate::language::every_language;
 
 	fn color_list(palette: Palette) -> [&'static str; 3] {
 		[palette.text, palette.muted, palette.ground]
@@ -55,23 +55,22 @@ mod tests {
 	}
 
 	#[test]
-	fn every_color_is_distinct_across_variants_and_languages() {
-		let mut all: Vec<String> = [Variant::Dark, Variant::Light]
+	fn palette_colors_are_distinct_and_never_a_language_color() {
+		let all: Vec<String> = [Variant::Dark, Variant::Light]
 			.into_iter()
 			.flat_map(|variant| color_list(palette(variant)))
 			.map(str::to_ascii_lowercase)
 			.collect();
 		let palette_count = all.len();
-		all.extend(
-			LANGUAGE_LIST
-				.iter()
-				.map(|language| language.color.to_ascii_lowercase()),
-		);
 		let mut unique = all.clone();
 		unique.sort();
 		unique.dedup();
-		assert_eq!(unique.len(), all.len());
+		assert_eq!(unique.len(), palette_count);
 		assert_eq!(palette_count, 6);
+		for language in every_language() {
+			let color = language.color.to_ascii_lowercase();
+			assert!(!all.contains(&color), "{} {color}", language.name);
+		}
 	}
 
 	#[test]

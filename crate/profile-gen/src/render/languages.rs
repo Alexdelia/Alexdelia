@@ -2900,6 +2900,14 @@ mod tests {
 	}
 
 	#[test]
+	fn language_without_linguist_color_renders_grey_with_letter_logo() {
+		let language = crate::language::language_by_name("Linker Script").unwrap();
+		let logo = token(3, language);
+		assert!(logo.contains("fill=\"#cccccc\""), "{logo}");
+		assert!(logo.contains(">L</text>"), "{logo}");
+	}
+
+	#[test]
 	fn no_external_references() {
 		let svg = render_languages(&fixture(), Variant::Dark, PACE);
 		assert_eq!(svg.matches("http").count(), 1);
