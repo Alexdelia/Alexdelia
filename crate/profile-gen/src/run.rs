@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::cache::{self, Usage};
 use crate::config::Config;
 use crate::error::Result;
-use crate::github::{Fetch, list_public, sync_clone};
+use crate::github::{Fetch, RepoInfo, list_contributed, list_public, sync_clone};
 use crate::language::Detector;
 use crate::render::languages::render_languages;
 use crate::theme::Variant;
@@ -28,6 +28,14 @@ fn read_private(path: &Path) -> Result<Usage> {
 	}
 }
 
+fn counted_repos(owned: Vec<RepoInfo>, contributed: Vec<RepoInfo>) -> Vec<RepoInfo> {
+	let mut seen: BTreeSet<String> = owned.iter().map(RepoInfo::full_name).collect();
+	let not_seen = contributed
+		.into_iter()
+		.filter(|repo| seen.insert(repo.full_name()));
+	owned.into_iter().chain(not_seen).collect()
+}
+
 fn refresh_cache(
 	config: &Config,
 	detector: &Detector,
@@ -36,14 +44,27 @@ fn refresh_cache(
 	work: &Path,
 	cache_path: &Path,
 ) -> Result<cache::Cache> {
-	let rules_hash = cache::rules_hash(&config.authors, &config.exclude_repos, &config.languages);
+	let rules_hash = cache::rules_hash(
+		&config.authors,
+		&config.exclude_repos,
+		&config.contributed,
+		&config.languages,
+	);
 	let mut cache = cache::load(cache_path, &rules_hash)?;
-	let repos = list_public(fetch, &config.owner, token, &config.exclude_repos)?;
+	let owned = list_public(fetch, &config.owner, token, &config.exclude_repos)?;
+	let contributed = list_contributed(fetch, token, &config.contributed)?;
+	let repos = counted_repos(owned, contributed);
 	for repo in &repos {
 		let clone = sync_clone(repo, work)?;
-		cache::update(&mut cache, &repo.name, &clone, &config.authors, detector)?;
+		cache::update(
+			&mut cache,
+			&repo.full_name(),
+			&clone,
+			&config.authors,
+			detector,
+		)?;
 	}
-	let names: BTreeSet<String> = repos.into_iter().map(|repo| repo.name).collect();
+	let names: BTreeSet<String> = repos.iter().map(RepoInfo::full_name).collect();
 	cache::retain(&mut cache, &names);
 	Ok(cache)
 }
@@ -82,42 +103,66 @@ mod tests {
 	use crate::cache::Cache;
 	use crate::fixture::{FixtureRepo, shipped_lists};
 	use crate::git;
+	use crate::github::{NotFound, RepoInfo};
+	use std::collections::BTreeMap;
 	use tempfile::TempDir;
 
 	const ME: &str = "me@example.com";
 	const WEEK_ONE_TS: i64 = 1_577_836_800;
 	const WEEK_TWO_TS: i64 = 1_578_441_600;
 
-	struct Listing(String);
+	const OWNER: &str = "me";
+
+	struct Listing {
+		owned: String,
+		contributed: BTreeMap<String, String>,
+	}
 
 	impl Fetch for Listing {
 		fn get(&self, url: &str, _token: Option<&str>) -> Result<String> {
+			if let Some(full_name) = url.strip_prefix("https://api.github.com/repos/") {
+				return self
+					.contributed
+					.get(full_name)
+					.cloned()
+					.ok_or_else(|| NotFound.into());
+			}
 			Ok(if url.ends_with("page=1") {
-				self.0.clone()
+				self.owned.clone()
 			} else {
 				"[]".to_owned()
 			})
 		}
 	}
 
+	fn repo_json(owner: &str, name: &str, repo: &FixtureRepo) -> String {
+		format!(
+			r#"{{"owner":{{"login":"{owner}"}},"name":"{name}","fork":false,"private":false,"clone_url":"{}"}}"#,
+			repo.path().display()
+		)
+	}
+
+	fn owned_listing(owned: &str) -> Listing {
+		Listing {
+			owned: owned.to_owned(),
+			contributed: BTreeMap::new(),
+		}
+	}
+
 	fn listing(repos: &[(&str, &FixtureRepo)]) -> Listing {
 		let entries: Vec<String> = repos
 			.iter()
-			.map(|(name, repo)| {
-				format!(
-					r#"{{"name":"{name}","fork":false,"private":false,"clone_url":"{}"}}"#,
-					repo.path().display()
-				)
-			})
+			.map(|(name, repo)| repo_json(OWNER, name, repo))
 			.collect();
-		Listing(format!("[{}]", entries.join(",")))
+		owned_listing(&format!("[{}]", entries.join(",")))
 	}
 
 	fn config() -> Config {
 		Config {
-			owner: "o".to_owned(),
+			owner: OWNER.to_owned(),
 			authors: vec![ME.to_owned()],
 			exclude_repos: Vec::new(),
+			contributed: Vec::new(),
 			top_n: 8,
 			max_frames: 150,
 			seconds_per_year: 5.0,
@@ -159,8 +204,8 @@ mod tests {
 		assert_ne!(dark, light);
 		let cache_text = read(&paths, "cache/languages.json");
 		let cache: Cache = serde_json::from_slice(&cache_text).unwrap();
-		assert_eq!(cache.repos["alpha"].last_sha, alpha.head());
-		assert_eq!(cache.repos["beta"].last_sha, beta.head());
+		assert_eq!(cache.repos["me/alpha"].last_sha, alpha.head());
+		assert_eq!(cache.repos["me/beta"].last_sha, beta.head());
 
 		render(&config(), &fetch, None, &paths).unwrap();
 		assert_eq!(read(&paths, "languages-dark.svg"), dark);
@@ -203,8 +248,102 @@ mod tests {
 		.unwrap();
 
 		render(&config(), &listing(&[("alpha", &alpha)]), None, &paths).unwrap();
-		let cache: Cache = serde_json::from_slice(&read(&paths, "cache/languages.json")).unwrap();
-		assert_eq!(cache.repos.keys().collect::<Vec<_>>(), ["alpha"]);
+		assert_eq!(
+			read_cache(&paths).repos.keys().collect::<Vec<_>>(),
+			["me/alpha"]
+		);
+	}
+
+	fn read_cache(paths: &Paths) -> Cache {
+		serde_json::from_slice(&read(paths, "cache/languages.json")).unwrap()
+	}
+
+	fn language_totals(cache: &Cache) -> BTreeMap<&'static str, u64> {
+		let mut totals = BTreeMap::new();
+		for lines in cache::usage(cache).weeks.values() {
+			for (language, count) in lines {
+				*totals.entry(*language).or_default() += count;
+			}
+		}
+		totals
+	}
+
+	#[test]
+	fn same_name_under_two_owners_counts_twice() {
+		let mine = fixture("a.rs", &"fn a() {}\n".repeat(40));
+		let theirs = fixture("b.c", &"int b;\n".repeat(30));
+		let mut fetch = listing(&[("alpha", &mine)]);
+		fetch.contributed.insert(
+			"friend/alpha".to_owned(),
+			repo_json("friend", "alpha", &theirs),
+		);
+		let mut config = config();
+		config.contributed = vec!["friend/alpha".to_owned(), "friend/gone".to_owned()];
+		let dir = TempDir::new().unwrap();
+		let paths = paths(&dir);
+
+		render(&config, &fetch, None, &paths).unwrap();
+
+		let cache = read_cache(&paths);
+		assert_eq!(
+			cache.repos.keys().collect::<Vec<_>>(),
+			["friend/alpha", "me/alpha"]
+		);
+		assert_eq!(cache.repos["me/alpha"].last_sha, mine.head());
+		assert_eq!(cache.repos["friend/alpha"].last_sha, theirs.head());
+		assert_eq!(
+			language_totals(&cache),
+			BTreeMap::from([("C", 30), ("Python", 4), ("Rust", 40)])
+		);
+		assert!(paths.work.join("me/alpha.git").exists());
+		assert!(paths.work.join("friend/alpha.git").exists());
+
+		config.contributed.clear();
+		render(&config, &fetch, None, &paths).unwrap();
+		assert_eq!(
+			read_cache(&paths).repos.keys().collect::<Vec<_>>(),
+			["me/alpha"]
+		);
+	}
+
+	#[test]
+	fn contributed_repo_already_owned_counts_once() {
+		let alpha = fixture("a.rs", &"fn a() {}\n".repeat(40));
+		let mut fetch = listing(&[("alpha", &alpha)]);
+		fetch
+			.contributed
+			.insert("me/alpha".to_owned(), repo_json(OWNER, "alpha", &alpha));
+		let mut config = config();
+		config.contributed = vec!["me/alpha".to_owned()];
+		let dir = TempDir::new().unwrap();
+		let paths = paths(&dir);
+
+		render(&config, &fetch, None, &paths).unwrap();
+
+		let cache = read_cache(&paths);
+		assert_eq!(cache.repos.keys().collect::<Vec<_>>(), ["me/alpha"]);
+		assert_eq!(
+			language_totals(&cache),
+			BTreeMap::from([("Python", 2), ("Rust", 40)])
+		);
+		let info = |owner: &str, name: &str| RepoInfo {
+			owner: owner.to_owned(),
+			name: name.to_owned(),
+			clone_url: String::new(),
+		};
+		let counted = counted_repos(
+			vec![info(OWNER, "alpha"), info(OWNER, "beta")],
+			vec![
+				info(OWNER, "alpha"),
+				info("friend", "alpha"),
+				info("friend", "gamma"),
+				info("friend", "alpha"),
+			],
+		);
+		assert_eq!(
+			counted.iter().map(RepoInfo::full_name).collect::<Vec<_>>(),
+			["me/alpha", "me/beta", "friend/alpha", "friend/gamma"]
+		);
 	}
 
 	#[test]
@@ -252,12 +391,19 @@ mod tests {
 	fn render_reports_listing_and_sync_failures() {
 		let dir = TempDir::new().unwrap();
 		let paths = paths(&dir);
-		assert!(render(&config(), &Listing("not json".to_owned()), None, &paths).is_err());
-		let broken = Listing(
-			r#"[{"name":"gone","fork":false,"private":false,"clone_url":"/nonexistent/src"}]"#
-				.to_owned(),
+		assert!(render(&config(), &owned_listing("not json"), None, &paths).is_err());
+		let broken = owned_listing(
+			r#"[{"owner":{"login":"me"},"name":"gone","fork":false,"private":false,"clone_url":"/nonexistent/src"}]"#,
 		);
-		assert!(render(&config(), &broken, None, &paths).is_err());
+		let error = render(&config(), &broken, None, &paths).unwrap_err();
+		assert!(error.to_string().starts_with("git clone"), "{error}");
+		let mut config = config();
+		config.contributed = vec!["friend/broken".to_owned()];
+		let unreachable = Listing {
+			owned: "[]".to_owned(),
+			contributed: BTreeMap::from([("friend/broken".to_owned(), "not json".to_owned())]),
+		};
+		assert!(render(&config, &unreachable, None, &paths).is_err());
 	}
 
 	#[test]
@@ -318,7 +464,7 @@ mod tests {
 		let fetch = listing(&[("alpha", &alpha)]);
 		render(&config(), &fetch, None, &paths).unwrap();
 		std::fs::remove_file(paths.out.join("cache/languages.json")).unwrap();
-		let clone = paths.work.join("alpha.git");
+		let clone = paths.work.join("me/alpha.git");
 		let blob = git::command(&clone)
 			.args(["rev-parse", "HEAD:a.rs"])
 			.output()

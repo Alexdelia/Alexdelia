@@ -4,6 +4,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::error::Result;
+use crate::github::validate_full_name;
 
 pub const MIN_SECONDS_PER_YEAR: f64 = 2.1;
 
@@ -13,6 +14,7 @@ pub struct Config {
 	pub owner: String,
 	pub authors: Vec<String>,
 	pub exclude_repos: Vec<String>,
+	pub contributed: Vec<String>,
 	pub top_n: usize,
 	pub max_frames: usize,
 	pub seconds_per_year: f64,
@@ -32,6 +34,15 @@ impl Config {
 		let config: Self = toml::from_str(text)?;
 		if config.authors.is_empty() {
 			return Err("config: authors must not be empty".into());
+		}
+		for (field, list) in [
+			("exclude_repos", &config.exclude_repos),
+			("contributed", &config.contributed),
+		] {
+			for entry in list {
+				validate_full_name(entry)
+					.map_err(|error| format!("config: {field} entry {entry:?}: {error}"))?;
+			}
 		}
 		if config.top_n == 0 {
 			return Err("config: top_n must be positive".into());
@@ -62,7 +73,8 @@ mod tests {
 	const VALID: &str = r#"
 owner = "o"
 authors = ["a@example.com"]
-exclude_repos = ["x"]
+exclude_repos = ["o/x"]
+contributed = ["friend/tool"]
 top_n = 3
 max_frames = 10
 seconds_per_year = 2.5
@@ -78,7 +90,8 @@ ambiguous = { ".h" = "C" }
 		let config = Config::parse(VALID).unwrap();
 		assert_eq!(config.owner, "o");
 		assert_eq!(config.authors, ["a@example.com"]);
-		assert_eq!(config.exclude_repos, ["x"]);
+		assert_eq!(config.exclude_repos, ["o/x"]);
+		assert_eq!(config.contributed, ["friend/tool"]);
 		assert_eq!((config.top_n, config.max_frames), (3, 10));
 		assert!((config.seconds_per_year - 2.5).abs() < f64::EPSILON);
 		assert_eq!(config.languages.include, ["JSON"]);
@@ -115,6 +128,33 @@ ambiguous = { ".h" = "C" }
 	}
 
 	#[test]
+	fn contributed_entries_must_be_owner_slash_repo() {
+		for bad in ["a", "a/", "/b", "a/b/c", "a/..", "../b", "a b/c", "-a/b"] {
+			let error = rejection(
+				r#"contributed = ["friend/tool"]"#,
+				&format!("contributed = [{bad:?}]"),
+			);
+			assert!(error.contains("contributed"), "{bad}: {error}");
+		}
+		let accepted =
+			Config::parse(&VALID.replace("friend/tool", "maaike-slt/42-miniRT")).unwrap();
+		assert_eq!(accepted.contributed, ["maaike-slt/42-miniRT"]);
+	}
+
+	#[test]
+	fn exclude_repos_entries_must_be_owner_slash_repo() {
+		for bad in ["dotfile", "a/", "/b", "a/b/c", "a/.."] {
+			let error = rejection(
+				r#"exclude_repos = ["o/x"]"#,
+				&format!("exclude_repos = [{bad:?}]"),
+			);
+			assert!(error.contains("exclude_repos"), "{bad}: {error}");
+		}
+		let accepted = Config::parse(&VALID.replace("o/x", "Alexdelia/dotfile")).unwrap();
+		assert_eq!(accepted.exclude_repos, ["Alexdelia/dotfile"]);
+	}
+
+	#[test]
 	fn config_rejects_empty_authors() {
 		let text = VALID.replace(r#"["a@example.com"]"#, "[]");
 		let error = Config::parse(&text).unwrap_err();
@@ -126,6 +166,9 @@ ambiguous = { ".h" = "C" }
 		let config = Config::parse(include_str!("../config.toml")).unwrap();
 		assert_eq!(config.owner, "Alexdelia");
 		assert_eq!((config.top_n, config.max_frames), (16, 520));
+		assert_eq!(config.contributed.len(), 16);
+		assert_eq!(config.contributed[0], "Baitinq/nixos-config");
+		assert_eq!(config.contributed[15], "zhiburt/tabled");
 		assert!((config.seconds_per_year - 5.0).abs() < f64::EPSILON);
 		assert!(crate::language::Detector::new(&config.languages).is_ok());
 	}
@@ -135,6 +178,7 @@ ambiguous = { ".h" = "C" }
 		assert!(Config::parse(&format!("{VALID}extra = 1")).is_err());
 		assert!(Config::parse(r#"owner = "o""#).is_err());
 		assert!(Config::parse(&VALID.replace("exclude = [\"Perl\"]", "")).is_err());
+		assert!(Config::parse(&VALID.replace(r#"contributed = ["friend/tool"]"#, "")).is_err());
 		assert!(Config::parse(&format!("other = 1\n{VALID}")).is_err());
 	}
 

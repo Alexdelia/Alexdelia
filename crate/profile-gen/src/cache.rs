@@ -11,7 +11,7 @@ use crate::git;
 use crate::history::{Week, Weeks, weekly_added};
 use crate::language::{Detector, LINGUIST_DATA, language_by_name};
 
-const RULES_VERSION: u32 = 2;
+const RULES_VERSION: u32 = 3;
 
 type LanguageLines = BTreeMap<&'static str, u64>;
 
@@ -140,14 +140,20 @@ fn parse_language<E: serde::de::Error>(name: &str) -> std::result::Result<&'stat
 }
 
 #[must_use]
-pub fn rules_hash(authors: &[String], exclude_repos: &[String], lists: &LanguageLists) -> String {
-	hash_rules(LINGUIST_DATA, authors, exclude_repos, lists)
+pub fn rules_hash(
+	authors: &[String],
+	exclude_repos: &[String],
+	contributed: &[String],
+	lists: &LanguageLists,
+) -> String {
+	hash_rules(LINGUIST_DATA, authors, exclude_repos, contributed, lists)
 }
 
 fn hash_rules(
 	linguist_data: &str,
 	authors: &[String],
 	exclude_repos: &[String],
+	contributed: &[String],
 	lists: &LanguageLists,
 ) -> String {
 	let mut bytes = Vec::new();
@@ -161,6 +167,7 @@ fn hash_rules(
 	for list in [
 		authors,
 		exclude_repos,
+		contributed,
 		&lists.include,
 		&lists.exclude,
 		&ambiguous,
@@ -430,7 +437,7 @@ mod tests {
 	#[test]
 	fn rules_hash_depends_on_every_input() {
 		let hash = |authors: &[String], exclude_repos: &[String]| {
-			rules_hash(authors, exclude_repos, &no_lists())
+			rules_hash(authors, exclude_repos, &[], &no_lists())
 		};
 		let base = hash(&me(), &["x".to_owned()]);
 		assert_eq!(base, hash(&me(), &["x".to_owned()]));
@@ -449,9 +456,12 @@ mod tests {
 		let names =
 			|list: &[&str]| -> Vec<String> { list.iter().map(|name| (*name).to_owned()).collect() };
 		let ambiguous = |name: &str| BTreeMap::from([(".h".to_owned(), name.to_owned())]);
-		let base = rules_hash(&me(), &[], &no_lists());
-		assert_eq!(base, hash_rules(LINGUIST_DATA, &me(), &[], &no_lists()));
-		assert_ne!(base, hash_rules("{}", &me(), &[], &no_lists()));
+		let base = rules_hash(&me(), &[], &[], &no_lists());
+		assert_eq!(
+			base,
+			hash_rules(LINGUIST_DATA, &me(), &[], &[], &no_lists())
+		);
+		assert_ne!(base, hash_rules("{}", &me(), &[], &[], &no_lists()));
 		let variants = [
 			LanguageLists {
 				include: names(&["JSON"]),
@@ -481,13 +491,33 @@ mod tests {
 		];
 		let mut hashes: Vec<String> = variants
 			.iter()
-			.map(|lists| rules_hash(&me(), &[], lists))
+			.map(|lists| rules_hash(&me(), &[], &[], lists))
 			.chain([base])
 			.collect();
 		let count = hashes.len();
 		hashes.sort();
 		hashes.dedup();
 		assert_eq!(hashes.len(), count);
+	}
+
+	#[test]
+	fn rules_hash_covers_contributed() {
+		let hash = |exclude_repos: &[&str], contributed: &[&str]| {
+			let owned = |list: &[&str]| -> Vec<String> {
+				list.iter().map(|entry| (*entry).to_owned()).collect()
+			};
+			rules_hash(
+				&me(),
+				&owned(exclude_repos),
+				&owned(contributed),
+				&no_lists(),
+			)
+		};
+		let base = hash(&[], &["f/a"]);
+		assert_eq!(base, hash(&[], &["f/a"]));
+		assert_ne!(base, hash(&[], &[]));
+		assert_ne!(base, hash(&[], &["f/b"]));
+		assert_ne!(base, hash(&["f/a"], &[]));
 	}
 
 	#[test]

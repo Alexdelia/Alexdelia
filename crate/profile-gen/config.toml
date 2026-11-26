@@ -6,6 +6,24 @@ authors = [
 	"alexandre.delille@cureety.com"
 ]
 exclude_repos = []
+contributed = [
+	"Baitinq/nixos-config",
+	"dheereshag/coloured-icons",
+	"dylandoamaral/pokinder",
+	"justincapik/dslr",
+	"maaike-slt/42-cpp",
+	"maaike-slt/42-libft",
+	"maaike-slt/42-miniRT",
+	"maaike-slt/42-minishell",
+	"maaike-slt/dog-book",
+	"maaike-slt/dotfile",
+	"maaike-slt/maaike-slt",
+	"maaike-slt/stars",
+	"mierak/rmpc",
+	"nix-community/stylix",
+	"noib3/nvim-oxi",
+	"zhiburt/tabled"
+]
 top_n = 16
 max_frames = 520
 seconds_per_year = 5
