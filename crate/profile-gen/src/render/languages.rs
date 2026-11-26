@@ -2,15 +2,16 @@ use super::clock::{Clock, race_ms};
 use super::feed::{Feed, Shown, feed_list, growth, paired, shown_list, throw_list};
 use super::feeder::{
 	FLIGHT_RADIUS, Flight, SLING_X, absorbed_ms, feeder, flight_ms, flights, throw_ms,
-	tube_capacity,
 };
 use super::format::{
 	animate, animate_transform, arrow, compact, discrete, escape, float, key_time, month, num,
 	percent, totals_label, trend_word, whole_ms,
 };
+use super::heat::Heat;
 use super::ranking::{Cell, cell_at, grid, settle};
 use super::schedule::{Shot, schedule};
 use super::ticker::{Row, ticker};
+use super::tube::tube_capacity;
 use crate::icons::icon_path;
 use crate::language::Language;
 use crate::theme::{FONT_STACK, Palette, Variant, palette};
@@ -64,7 +65,7 @@ pub fn render_languages(timeline: &Timeline, variant: Variant, seconds_per_year:
 		defs(&race, colors),
 		ground(colors),
 		headers(&race),
-		feeder(&race.flight_list, race.clock.duration(), colors),
+		feeder(&race.flight_list, &race.heat, race.clock.duration(), colors),
 		race.lanes
 			.iter()
 			.map(|lane| column(lane, &race))
@@ -144,6 +145,7 @@ struct Race<'a> {
 	layout: Layout,
 	lanes: Vec<Lane<'a>>,
 	flight_list: Vec<Flight>,
+	heat: Heat,
 }
 
 impl<'a> Race<'a> {
@@ -201,11 +203,16 @@ impl<'a> Race<'a> {
 			flight.to_x = aim_x(flight, &lane.x, clock.tick_ms, layout.bar_width() / 2.0);
 		}
 		lanes.retain(|lane| lane.cells.iter().any(|cell| cell.visible));
+		let heat = Heat {
+			start_ms: u32::try_from(plan.start_ms() + clock.lead_ms()).unwrap_or(0),
+			sample_list: plan.heat,
+		};
 		Self {
 			clock,
 			layout,
 			lanes,
 			flight_list,
+			heat,
 		}
 	}
 }
@@ -669,7 +676,7 @@ fn date_and_totals(timeline: &Timeline, clock: &Clock) -> String {
 #[cfg(test)]
 mod tests {
 	use super::super::feeder::{POUCH_Y, SLING_X};
-	use super::super::probe::{Pool, off_line};
+	use super::super::probe::{Pool, drop_at, drop_begins, off_line, vertex_list};
 	use super::super::ranking::grid;
 	use super::*;
 	use crate::cache::Usage;
@@ -1528,7 +1535,9 @@ mod tests {
 				let half = number(tagged(&document, "data-bar", name), "width") / 2.0;
 				let step_list = height_step_list(&document, name);
 				let pool = Pool::of(node);
-				assert!(pool.static_at().1 >= GROUND + FLIGHT_RADIUS, "{name}");
+				let hidden_y = GROUND + drawn_extent(&document, node);
+				assert!(hidden_y >= GROUND + FLIGHT_RADIUS + 6.0, "{hidden_y}");
+				assert!(pool.static_at().1 >= hidden_y, "{name}");
 				assert_reused_once_hidden(&pool);
 				let next_list = pool.begin_list.iter().skip(1).copied();
 				for (begin, next) in pool.begin_list.iter().zip(next_list.chain([f64::INFINITY])) {
@@ -1549,9 +1558,8 @@ mod tests {
 							beside.max((pool.at(at, *begin).0 - slide_at(column, at)).abs() - half);
 					}
 					assert!(
-						ms_between(vanish, next.min(begin + 3_000.0), 2).all(|at| {
-							!pool.shown(at) || pool.at(at, *begin).1 >= GROUND + FLIGHT_RADIUS
-						}),
+						ms_between(vanish, next.min(begin + 3_000.0), 2)
+							.all(|at| { !pool.shown(at) || pool.at(at, *begin).1 >= hidden_y }),
 						"{name} {begin}"
 					);
 					absorbed += 1;
@@ -1585,6 +1593,30 @@ mod tests {
 			node.first_element_child().unwrap()
 		};
 		scale_of(node) * drawn_radius(document, inner)
+	}
+
+	fn drawn_extent(document: &Document, node: Node) -> f64 {
+		let reach = if node.has_tag_name("circle") {
+			number(node, "r")
+				+ node
+					.attribute("stroke-width")
+					.map_or(0.0, |width| width.parse::<f64>().unwrap() / 2.0)
+		} else if node.has_tag_name("use") {
+			drawn_extent(
+				document,
+				tagged(document, "id", &node.attribute("href").unwrap()[1..]),
+			)
+		} else {
+			node.children()
+				.filter(|child| {
+					child.has_tag_name("circle")
+						|| child.has_tag_name("use")
+						|| child.has_tag_name("g")
+				})
+				.map(|child| drawn_extent(document, child))
+				.fold(0.0, f64::max)
+		};
+		scale_of(node) * reach
 	}
 
 	fn tube_marker_list<'a>(document: &'a Document) -> Vec<Node<'a, 'a>> {
@@ -2357,16 +2389,273 @@ mod tests {
 		}
 	}
 
+	fn real_like() -> Timeline {
+		let mut usage = Usage::default();
+		for (offset, name) in (0_i64..).zip(LARGE_NAME_LIST.iter().take(16)) {
+			let period = 4 + offset % 5;
+			for index in offset * 12..320 {
+				if (index * 7 + offset * 5) % period == 0 {
+					let lines = u64::try_from(40 + (index * 31 + offset * 17) % 900).unwrap();
+					spread(&mut usage, name, index..index + 1, lines);
+				}
+			}
+			usage.first_use.insert(name, vec![week(offset * 12)]);
+		}
+		timeline(&usage, 16, 520)
+	}
+
 	#[test]
-	fn size_stays_in_budget_at_520_weeks_16_languages() {
+	fn dense_history_with_effects_under_1mb() {
 		let data = large();
 		assert!(data.languages.len() >= 16);
 		assert_eq!(data.frames.len(), 520);
 		for variant in [Variant::Dark, Variant::Light] {
 			let svg = render_languages(&data, variant, PACE);
-			assert!(svg.len() <= 780_000, "{}", svg.len());
+			assert!(svg.len() < 1_000_000, "{}", svg.len());
+			assert!(svg.contains("data-flames"));
 			assert!(Document::parse(&svg).is_ok());
 		}
+	}
+
+	#[test]
+	fn real_like_history_stays_under_300kb() {
+		let data = real_like();
+		let race = Race::new(&data, PACE);
+		assert!(race.flight_list.len() > 500, "{}", race.flight_list.len());
+		for variant in [Variant::Dark, Variant::Light] {
+			let svg = render_languages(&data, variant, PACE);
+			assert!(svg.len() <= 300_000, "{}", svg.len());
+		}
+	}
+
+	struct Steps {
+		key_list: Vec<f64>,
+		value_list: Vec<f64>,
+	}
+
+	impl Steps {
+		fn of(animation: Node, pick: fn(&str) -> f64) -> Self {
+			let duration = ms(animation, "dur");
+			Self {
+				key_list: number_list(animation, "keyTimes")
+					.into_iter()
+					.map(|key| key * duration)
+					.collect(),
+				value_list: animation
+					.attribute("values")
+					.unwrap()
+					.split(';')
+					.map(pick)
+					.collect(),
+			}
+		}
+
+		fn at(&self, at: f64) -> f64 {
+			let index = self.key_list.partition_point(|key| *key <= at + 0.01);
+			self.value_list[index.max(1) - 1]
+		}
+	}
+
+	fn tube_box(document: &Document) -> (f64, f64) {
+		let rect = tagged(document, "id", "tb").first_element_child().unwrap();
+		let top = number(rect, "y");
+		(top, top + number(rect, "height"))
+	}
+
+	#[test]
+	fn tube_never_shows_more_than_fits() {
+		for (data, least_drops) in [(large(), 0), (real_like(), 20)] {
+			let svg = render_languages(&data, Variant::Dark, PACE);
+			let document = Document::parse(&svg).unwrap();
+			let (top, bottom) = tube_box(&document);
+			let radius = drawn_extent(&document, tube_marker_list(&document)[0]);
+			assert!((radius - FLIGHT_RADIUS).abs() < 1e-9, "{radius}");
+			let capacity = ((bottom - top) / (2.0 * radius)).floor();
+			let window = Steps::of(
+				tagged(&document, "id", "tw")
+					.first_element_child()
+					.unwrap()
+					.first_element_child()
+					.unwrap(),
+				|value| value.parse().unwrap(),
+			);
+			let step_node = document
+				.descendants()
+				.find(|node| node.has_attribute("data-step"))
+				.unwrap();
+			let step = Steps::of(step_node.first_element_child().unwrap(), |value| {
+				value.split(' ').nth(1).unwrap().parse().unwrap()
+			});
+			let mut vertex_y: Vec<f64> = step_node
+				.descendants()
+				.filter(|node| node.has_attribute("marker-mid"))
+				.flat_map(|tape| {
+					let mut list = vertex_list(tape.attribute("d").unwrap());
+					list.pop();
+					list
+				})
+				.map(|vertex| vertex.1)
+				.collect();
+			vertex_y.sort_by(f64::total_cmp);
+			let mut instant_list: Vec<f64> = window
+				.key_list
+				.iter()
+				.chain(&step.key_list)
+				.copied()
+				.collect();
+			instant_list.sort_by(f64::total_cmp);
+			let mut peak = 0.0;
+			for at in instant_list {
+				let (edge, offset) = (window.at(at), step.at(at));
+				let shown = vertex_y
+					.iter()
+					.map(|y| y + offset)
+					.filter(|y| y + radius > edge + 0.01 && y - radius < bottom - 0.01)
+					.inspect(|y| {
+						assert!(
+							*y - radius >= edge - 0.01 && *y + radius <= bottom + 0.01,
+							"{at} {y}"
+						);
+					})
+					.count();
+				let shown = float(shown);
+				assert!(shown <= capacity, "{at} {shown}");
+				peak = f64::max(peak, shown);
+			}
+			assert!((peak - capacity).abs() < 1e-9, "{peak}");
+			let drop_list: Vec<Node> = document
+				.descendants()
+				.filter(|node| node.has_attribute("data-entry"))
+				.collect();
+			let mut dropped = 0;
+			for node in drop_list {
+				for begin in drop_begins(node) {
+					dropped += 1;
+					for at in (0..=400).map(|step| begin + f64::from(step)) {
+						let y = drop_at(node, begin, at);
+						let edge = window.at(at);
+						assert!(
+							y + radius <= edge + 0.5 || y - radius >= edge - 0.5,
+							"{begin} {at} {y} {edge}"
+						);
+					}
+				}
+			}
+			assert!(dropped >= least_drops, "{dropped}");
+		}
+	}
+
+	#[test]
+	fn effects_end_calm() {
+		for (data, colors) in [
+			(real_like(), palette(Variant::Dark)),
+			(burst(), palette(Variant::Light)),
+		] {
+			let variant = if colors == palette(Variant::Dark) {
+				Variant::Dark
+			} else {
+				Variant::Light
+			};
+			let svg = render_languages(&data, variant, PACE);
+			let document = Document::parse(&svg).unwrap();
+			let rig = document
+				.descendants()
+				.find(|node| node.has_attribute("data-rig"))
+				.unwrap();
+			assert!(rig.attribute("transform").is_none());
+			for key in ["data-glow", "data-sparks", "data-flames", "data-bolt"] {
+				let node = rig
+					.descendants()
+					.find(|node| node.has_attribute(key))
+					.unwrap();
+				assert_eq!(node.attribute("opacity"), Some("0"), "{key}");
+			}
+			assert_eq!(tagged(&document, "id", "e").attribute("opacity"), Some("0"));
+			let mut animated = 0;
+			for node in document.descendants() {
+				let last = node
+					.attribute("values")
+					.and_then(|values| values.rsplit(';').next());
+				match node.attribute("attributeName") {
+					Some("opacity")
+						if node.ancestors().any(|up| {
+							up.has_attribute("data-rig") || up.attribute("id") == Some("e")
+						}) =>
+					{
+						assert_eq!(last, Some("0"), "{node:?}");
+						animated += 1;
+					}
+					Some("stroke") => assert_eq!(last, Some(colors.muted), "{node:?}"),
+					Some("transform")
+						if node
+							.attribute("begin")
+							.is_some_and(|begin| begin.ends_with("ms")) =>
+					{
+						assert_eq!(last, Some("0"), "{node:?}");
+					}
+					_ => {}
+				}
+			}
+			assert!(animated >= 5, "{animated}");
+			let (_, bottom) = tube_box(&document);
+			let window = tagged(&document, "id", "tw").first_element_child().unwrap();
+			assert!((number(window, "y") - bottom).abs() < 1e-9);
+			let step_node = document
+				.descendants()
+				.find(|node| node.has_attribute("data-step"))
+				.unwrap();
+			let resting: f64 = step_node
+				.attribute("transform")
+				.unwrap()
+				.trim_end_matches(')')
+				.rsplit(' ')
+				.next()
+				.unwrap()
+				.parse()
+				.unwrap();
+			let radius = drawn_extent(&document, tube_marker_list(&document)[0]);
+			for tape in step_node
+				.descendants()
+				.filter(|node| node.has_attribute("marker-mid"))
+			{
+				for vertex in vertex_list(tape.attribute("d").unwrap()) {
+					assert!(vertex.1 + resting - radius >= bottom - 1e-9);
+				}
+			}
+			for node in document
+				.descendants()
+				.filter(|node| node.has_attribute("data-entry"))
+			{
+				assert!(number(node, "y") - drawn_extent(&document, node) > bottom);
+			}
+		}
+	}
+
+	#[test]
+	fn heat_reaches_the_feeder() {
+		let data = burst();
+		let race = Race::new(&data, PACE);
+		let earliest = race
+			.flight_list
+			.iter()
+			.map(|flight| flight.enter_ms)
+			.min()
+			.unwrap();
+		assert!(
+			race.heat.start_ms >= earliest && race.heat.start_ms <= earliest + 20,
+			"{}",
+			race.heat.start_ms
+		);
+		assert!(race.heat.sample_list.iter().any(|heat| *heat > 900));
+		let svg = render_languages(&data, Variant::Dark, PACE);
+		let document = Document::parse(&svg).unwrap();
+		let flames = document
+			.descendants()
+			.find(|node| node.has_attribute("data-flames"))
+			.unwrap();
+		let fade = flames.first_element_child().unwrap();
+		assert!(number_list(fade, "values").iter().any(|value| *value > 0.5));
+		assert_eq!(svg, render_languages(&data, Variant::Dark, PACE));
 	}
 
 	#[test]

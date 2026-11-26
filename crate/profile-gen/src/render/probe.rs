@@ -1,5 +1,6 @@
 use roxmltree::Node;
 
+use super::feeder::Flight;
 use super::format::float;
 
 pub(super) struct Pool {
@@ -230,4 +231,129 @@ pub(super) fn off_line(point_list: &[(f64, f64)]) -> f64 {
 		.iter()
 		.map(|(at, value)| (slope.mul_add(at - first.0, first.1) - value).abs())
 		.fold(0.0, f64::max)
+}
+
+pub(super) fn aimed_flight(lane: usize, enter_ms: u32, fire_ms: u32, landing_y: f64) -> Flight {
+	Flight {
+		lane,
+		name: "Rust",
+		frame: 0,
+		enter_ms,
+		fire_ms,
+		land_ms: fire_ms + 500,
+		to_x: 300.0,
+		landing_y,
+	}
+}
+
+pub(super) fn test_flight(lane: usize, enter_ms: u32, fire_ms: u32) -> Flight {
+	aimed_flight(lane, enter_ms, fire_ms, 250.0)
+}
+
+pub(super) fn wrapped(svg: &str) -> String {
+	format!("<svg xmlns=\"http://www.w3.org/2000/svg\">{svg}</svg>")
+}
+
+pub(super) fn value_at(animation: Node, ms: f64) -> String {
+	let duration = clock(animation.attribute("dur").unwrap());
+	let key_list: Vec<f64> = animation
+		.attribute("keyTimes")
+		.unwrap()
+		.split(';')
+		.map(|key| key.parse::<f64>().unwrap() * duration)
+		.collect();
+	let value_list: Vec<&str> = animation.attribute("values").unwrap().split(';').collect();
+	let index = key_list.iter().rposition(|key| *key <= ms + 0.01).unwrap();
+	value_list[index].to_owned()
+}
+
+fn animation_keys(animation: Node) -> Vec<f64> {
+	let duration = clock(animation.attribute("dur").unwrap());
+	animation
+		.attribute("keyTimes")
+		.unwrap()
+		.split(';')
+		.map(|key| key.parse::<f64>().unwrap() * duration)
+		.collect()
+}
+
+pub(super) fn linear_at(animation: Node, ms: f64) -> f64 {
+	let key_list = animation_keys(animation);
+	let value_list: Vec<f64> = animation
+		.attribute("values")
+		.unwrap()
+		.split(';')
+		.map(|value| value.parse().unwrap())
+		.collect();
+	let index = key_list.iter().rposition(|key| *key <= ms).unwrap();
+	let Some(next) = key_list.get(index + 1) else {
+		return value_list[index];
+	};
+	let part = (ms - key_list[index]) / (next - key_list[index]);
+	(value_list[index + 1] - value_list[index]).mul_add(part, value_list[index])
+}
+
+pub(super) fn uniform_at(animation: Node, ms: f64) -> String {
+	let begin = clock(animation.attribute("begin").unwrap());
+	let duration = clock(animation.attribute("dur").unwrap());
+	let value_list: Vec<&str> = animation.attribute("values").unwrap().split(';').collect();
+	let slot = duration / float(value_list.len());
+	let index = (0..value_list.len())
+		.take_while(|position| slot.mul_add(float(*position), begin) <= ms)
+		.last()
+		.unwrap_or(0);
+	value_list[index].to_owned()
+}
+
+pub(super) fn vertex_list(path: &str) -> Vec<(f64, f64)> {
+	let spaced: String = path
+		.chars()
+		.flat_map(|letter| match letter {
+			'M' | 'v' | 'l' | 'h' => vec![' ', letter, ' '],
+			'-' => vec![' ', '-'],
+			_ => vec![letter],
+		})
+		.collect();
+	let mut part_list = spaced.split_whitespace();
+	let mut vertex_list = Vec::new();
+	let mut at = (0.0, 0.0);
+	let mut command = "M";
+	while let Some(part) = part_list.next() {
+		let number = |text: &str| text.parse::<f64>().unwrap();
+		match part {
+			"M" | "v" | "l" | "h" => command = part,
+			_ => {
+				let first = number(part);
+				at = match command {
+					"M" => (first, number(part_list.next().unwrap())),
+					"l" => (at.0 + first, at.1 + number(part_list.next().unwrap())),
+					"v" => (at.0, at.1 + first),
+					_ => (at.0 + first, at.1),
+				};
+				vertex_list.push(at);
+			}
+		}
+	}
+	vertex_list
+}
+
+pub(super) fn drop_at(node: Node, begin: f64, ms: f64) -> f64 {
+	let motion = node.first_element_child().unwrap();
+	let duration = clock(motion.attribute("dur").unwrap());
+	let lift = pair(
+		motion
+			.attribute("values")
+			.unwrap()
+			.split(';')
+			.next()
+			.unwrap(),
+	)
+	.1;
+	let deep = number(node, "y");
+	let part = ((ms - begin) / duration).clamp(0.0, 1.0);
+	(-lift).mul_add(part * part, deep + lift)
+}
+
+pub(super) fn drop_begins(node: Node) -> Vec<f64> {
+	clock_list(node.first_element_child().unwrap(), "begin")
 }

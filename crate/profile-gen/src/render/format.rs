@@ -25,6 +25,10 @@ pub(super) fn whole_ms(ms: f64) -> i64 {
 	})
 }
 
+pub(super) fn seconds(ms: u32) -> String {
+	num(f64::from(ms) / 1_000.0, 3)
+}
+
 pub(super) fn discrete(
 	head: &str,
 	start: &str,
