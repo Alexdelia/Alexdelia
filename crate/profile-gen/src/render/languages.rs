@@ -1,4 +1,5 @@
 use super::clock::{Clock, race_ms};
+use super::crossing::{Track, close_runs};
 use super::feed::{Feed, Shown, feed_list, growth, paired, shown_list, throw_list};
 use super::feeder::{
 	FLIGHT_RADIUS, Flight, SLING_X, absorbed_ms, feeder, flight_ms, flights, throw_ms,
@@ -28,16 +29,22 @@ const USABLE_WIDTH: f64 = WIDTH - GUTTER - RIGHT_MARGIN;
 const MAX_SLOT: f64 = 64.0;
 const BAR_RATIO: f64 = 0.72;
 const TOP_RADIUS: f64 = 2.0;
-const LABEL_PAD: f64 = 4.0;
+const LABEL_PAD: f64 = 6.0;
 const HEADER_GAP: f64 = 4.0;
 const HEADER_LIST: [&str; 5] = ["share", "lines", "repos", "since", "past year"];
-const GLYPH_EM: f64 = 0.62;
+const GLYPH_EM: f64 = 0.66;
+const THIN_EM: f64 = 0.31;
+const NARROW_EM: f64 = 0.46;
+const BROAD_EM: f64 = 0.82;
+const WIDE_EM: f64 = 1.0;
 const NAME_FONT_PX: f64 = 10.0;
 
 pub(super) const TOKEN_RADIUS: f64 = 10.0;
 const DARK_INK_THRESHOLD: u32 = 150_000;
 const GROUND_DRAW_MS: f64 = 600.0;
 const FADE_MS: f64 = 250.0;
+const LEGEND_DIP: f64 = 0.1;
+const DIP_BRIDGE_TICKS: usize = 4;
 const CONTACT_MARGIN: f64 = 2.0;
 
 const TOKEN_ROW: f64 = GROUND + 24.0;
@@ -79,7 +86,20 @@ pub fn render_languages(timeline: &Timeline, variant: Variant, seconds_per_year:
 }
 
 fn name_width(name: &str) -> f64 {
-	float(name.chars().count()) * GLYPH_EM * NAME_FONT_PX
+	name.chars().map(glyph_em).sum::<f64>() * NAME_FONT_PX
+}
+
+const fn glyph_em(glyph: char) -> f64 {
+	match glyph {
+		' ' | '!' | '\'' | ',' | '.' | ':' | ';' | 'i' | 'j' | 'l' => THIN_EM,
+		'(' | ')' | '-' | '/' | 'I' | 'J' | '[' | '\\' | ']' | '_' | '`' | 'f' | 'r' | 't'
+		| '{' | '}' => NARROW_EM,
+		'%' | '@' | 'M' | 'W' | 'm' | 'w' => WIDE_EM,
+		'&' | 'A' | 'B' | 'D' | 'G' | 'H' | 'K' | 'N' | 'O' | 'Q' | 'R' | 'U' | 'V' | 'X' | 'Y' => {
+			BROAD_EM
+		}
+		_ => GLYPH_EM,
+	}
 }
 
 struct Layout {
@@ -120,6 +140,7 @@ struct Lane<'a> {
 	x: Vec<f64>,
 	growth: Vec<(u32, f64)>,
 	shown: Vec<Shown>,
+	crossing: Vec<(usize, usize)>,
 }
 
 impl Lane<'_> {
@@ -203,6 +224,10 @@ impl<'a> Race<'a> {
 			flight.to_x = aim_x(flight, &lane.x, clock.tick_ms, layout.bar_width() / 2.0);
 		}
 		lanes.retain(|lane| lane.cells.iter().any(|cell| cell.visible));
+		let crossing_list = crossing_list(&lanes, &clock, layout.label_room());
+		for (lane, crossing) in lanes.iter_mut().zip(crossing_list) {
+			lane.crossing = crossing;
+		}
 		let heat = Heat {
 			start_ms: u32::try_from(plan.start_ms() + clock.lead_ms()).unwrap_or(0),
 			sample_list: plan.heat,
@@ -215,6 +240,31 @@ impl<'a> Race<'a> {
 			heat,
 		}
 	}
+}
+
+fn crossing_list(lanes: &[Lane], clock: &Clock, reach: f64) -> Vec<Vec<(usize, usize)>> {
+	let shown_grid: Vec<Vec<bool>> = lanes
+		.iter()
+		.map(|lane| shown_ticks(&lane.shown, clock))
+		.collect();
+	let ranked_grid: Vec<Vec<bool>> = lanes
+		.iter()
+		.map(|lane| {
+			(0..clock.ticks())
+				.map(|tick| lane.at(tick, clock).visible)
+				.collect()
+		})
+		.collect();
+	let track_list: Vec<Track> = lanes
+		.iter()
+		.zip(shown_grid.iter().zip(&ranked_grid))
+		.map(|(lane, (shown, ranked))| Track {
+			x: &lane.x,
+			shown,
+			ranked,
+		})
+		.collect();
+	close_runs(&track_list, reach, DIP_BRIDGE_TICKS)
 }
 
 fn flight(feed: &Feed, shot: &Shot, lane: &Lane, clock: &Clock) -> Flight {
@@ -294,6 +344,7 @@ fn lane<'a>(
 		x: settle(&target_list, f64::from(clock.tick_ms)),
 		growth: Vec::new(),
 		shown: Vec::new(),
+		crossing: Vec::new(),
 		cells,
 	}
 }
@@ -463,9 +514,9 @@ fn column(lane: &Lane, race: &Race) -> String {
 			"<g clip-path=\"url(#k)\">",
 			"<rect data-bar=\"{name}\" x=\"{left}\" width=\"{width}\" rx=\"{radius}\" fill=\"{color}\" transform=\"matrix(1 0 0 -1 0 {base})\" height=\"{height}\">{grow}</rect>",
 			"</g>",
-			"<use href=\"#i{index}\" y=\"{token_y}\"/>",
+			"<g>{dip}<use href=\"#i{index}\" y=\"{token_y}\"/>",
 			"{name_label}{legend}{since}{trend}",
-			"</g>",
+			"</g></g>",
 		),
 		name = name,
 		x = num(lane.x.last().copied().unwrap_or(0.0), 1),
@@ -476,6 +527,7 @@ fn column(lane: &Lane, race: &Race) -> String {
 		},
 		slide = animate_transform("translate", &x_list.join(";"), duration),
 		fade = fade(&lane.shown, duration),
+		dip = dip(&lane.crossing, clock),
 		left = num(-width / 2.0, 1),
 		width = num(width, 1),
 		radius = num(TOP_RADIUS, 1),
@@ -508,7 +560,7 @@ fn growth_animation(lane: &Lane, duration: f64) -> String {
 	)
 }
 
-fn fade(shown: &[Shown], duration: f64) -> String {
+fn merged(shown: &[Shown]) -> Vec<Shown> {
 	let mut merged: Vec<Shown> = Vec::new();
 	for run in shown {
 		let off = run.off.map(|off| off.max(run.on + FADE_MS));
@@ -519,6 +571,79 @@ fn fade(shown: &[Shown], duration: f64) -> String {
 			_ => merged.push(Shown { on: run.on, off }),
 		}
 	}
+	merged
+}
+
+fn shown_ticks(shown: &[Shown], clock: &Clock) -> Vec<bool> {
+	let margin = f64::from(clock.tick_ms);
+	let run_list = merged(shown);
+	(0..clock.ticks())
+		.map(|tick| {
+			let ms = clock.ms(tick);
+			run_list.iter().any(|run| {
+				run.on - margin <= ms && run.off.is_none_or(|off| ms <= off + FADE_MS + margin)
+			})
+		})
+		.collect()
+}
+
+fn dip_runs(crossing: &[(usize, usize)], last: usize) -> Vec<(usize, usize)> {
+	let mut run_list: Vec<(usize, usize)> = Vec::new();
+	for (start, end) in crossing.iter().filter(|(start, _)| *start < last) {
+		let ramp_in = start.saturating_sub(1);
+		match run_list.last_mut() {
+			Some(run) if ramp_in <= run.1 + 2 => run.1 = run.1.max(*end),
+			_ => run_list.push((*start, *end)),
+		}
+	}
+	run_list
+}
+
+fn dip(crossing: &[(usize, usize)], clock: &Clock) -> String {
+	let last = clock.ticks() - 1;
+	let run_list = dip_runs(crossing, last);
+	if run_list.is_empty() {
+		return String::new();
+	}
+	let mut point_list: Vec<(usize, f64)> = vec![(0, 1.0)];
+	for (start, end) in run_list {
+		for point in [
+			(start.saturating_sub(1), 1.0),
+			(start, LEGEND_DIP),
+			((end + 1).min(last - 1), LEGEND_DIP),
+			((end + 2).min(last), 1.0),
+		] {
+			if point_list
+				.last()
+				.is_some_and(|previous| previous.0 == point.0)
+			{
+				point_list.pop();
+			}
+			point_list.push(point);
+		}
+	}
+	if point_list.last().is_some_and(|point| point.0 < last) {
+		point_list.push((last, 1.0));
+	}
+	let duration = clock.duration();
+	let key_list: Vec<String> = point_list
+		.iter()
+		.map(|(tick, _)| key_time(clock.ms(*tick), duration))
+		.collect();
+	let value_list: Vec<String> = point_list
+		.iter()
+		.map(|(_, opacity)| num(*opacity, 2))
+		.collect();
+	format!(
+		"<animate attributeName=\"opacity\" values=\"{}\" keyTimes=\"{}\" dur=\"{}ms\" fill=\"freeze\"/>",
+		value_list.join(";"),
+		key_list.join(";"),
+		num(duration, 0),
+	)
+}
+
+fn fade(shown: &[Shown], duration: f64) -> String {
+	let merged = merged(shown);
 	let mut point_list: Vec<(f64, bool)> =
 		vec![(0.0, merged.first().is_some_and(|first| first.on <= 0.0))];
 	for run in &merged {
@@ -676,7 +801,9 @@ fn date_and_totals(timeline: &Timeline, clock: &Clock) -> String {
 #[cfg(test)]
 mod tests {
 	use super::super::feeder::{POUCH_Y, SLING_X};
-	use super::super::probe::{Pool, drop_at, drop_begins, off_line, vertex_list};
+	use super::super::probe::{
+		Pool, drop_at, drop_begins, linear_at, off_line, vertex_list, wrapped,
+	};
 	use super::super::ranking::grid;
 	use super::*;
 	use crate::cache::Usage;
@@ -1631,7 +1758,7 @@ mod tests {
 		let svg = render_languages(&fixture(), Variant::Dark, PACE);
 		let document = Document::parse(&svg).unwrap();
 		let legend = column(&document, "Rust")
-			.children()
+			.descendants()
 			.find(|node| node.has_tag_name("use"))
 			.unwrap();
 		let logo = drawn_radius(&document, legend);
@@ -2000,16 +2127,9 @@ mod tests {
 		let document = Document::parse(&svg).unwrap();
 		for name in ["Rust", "C"] {
 			let column = column(&document, name);
-			let name_text = column
-				.descendants()
-				.find(|node| node.has_tag_name("text") && node.text() == Some(name))
-				.unwrap();
-			assert!(shows_from_start(name_text), "{name}");
-			let token = column
-				.children()
-				.find(|node| node.has_tag_name("use"))
-				.unwrap();
-			assert!(shows_from_start(token), "{name}");
+			assert_one_legend_group(column);
+			assert!(shows_from_start(column), "{name}");
+			assert!((legend_opacity(column, 0.0) - 1.0).abs() < 1e-9, "{name}");
 		}
 	}
 
@@ -2327,6 +2447,365 @@ mod tests {
 			.unwrap();
 		let header_x = number(header, "x");
 		assert!(header_x <= x_list[0] - layout.slot / 2.0, "{header_x}");
+	}
+
+	const SPACE_PX: f64 = 2.59;
+	const NAME_GAP_PX: f64 = 2.0 * SPACE_PX;
+	const RENDERED_NAME_PX: [(&str, f64); 30] = [
+		("Rust", 22.48),
+		("C", 6.38),
+		("C++", 17.81),
+		("Nix", 16.97),
+		("Python", 35.64),
+		("TypeScript", 52.44),
+		("JavaScript", 50.0),
+		("Shell", 24.09),
+		("Makefile", 43.47),
+		("Dockerfile", 51.27),
+		("Go", 13.44),
+		("Java", 21.09),
+		("Lua", 18.27),
+		("HTML", 28.53),
+		("CSS", 17.39),
+		("SCSS", 22.91),
+		("OpenSCAD", 52.95),
+		("GLSL", 24.06),
+		("Boo", 19.11),
+		("Haskell", 36.88),
+		("Assembly", 47.64),
+		("CMake", 33.95),
+		("Vim script", 50.34),
+		("Markdown", 53.67),
+		("RON", 22.7),
+		("PHP", 20.22),
+		("Jupyter Notebook", 88.58),
+		("PowerShell", 55.38),
+		("WebAssembly", 69.36),
+		("Mathematica", 66.73),
+	];
+
+	const NOTO_GLYPH_CENTI_PX: [u16; 95] = [
+		259, 286, 472, 645, 572, 900, 750, 266, 339, 339, 544, 572, 284, 322, 284, 413, 572, 572,
+		572, 572, 572, 572, 572, 572, 572, 572, 284, 284, 572, 572, 572, 477, 897, 689, 672, 636,
+		739, 559, 548, 723, 764, 389, 331, 664, 564, 942, 813, 795, 628, 795, 659, 550, 578, 756,
+		650, 967, 667, 623, 578, 331, 413, 331, 572, 411, 361, 603, 633, 514, 633, 591, 386, 633,
+		656, 305, 305, 619, 305, 981, 656, 619, 633, 633, 453, 497, 433, 656, 569, 856, 578, 569,
+		488, 394, 550, 394, 572,
+	];
+
+	#[test]
+	fn every_glyph_estimate_covers_its_rendered_width() {
+		for (glyph, centi) in (' '..='~').zip(NOTO_GLYPH_CENTI_PX) {
+			let rendered = f64::from(centi) / 100.0;
+			let estimate = glyph_em(glyph) * NAME_FONT_PX;
+			assert!(estimate >= rendered, "{glyph:?} {estimate} < {rendered}");
+		}
+	}
+
+	fn dip_clock() -> Clock {
+		Clock::new(40, 3_900, 0)
+	}
+
+	fn dip_animation(crossing: &[(usize, usize)]) -> String {
+		wrapped(&dip(crossing, &dip_clock()))
+	}
+
+	fn dip_at(document: &Document, tick: usize) -> f64 {
+		let animation = document.root_element().first_element_child().unwrap();
+		linear_at(animation, dip_clock().ms(tick))
+	}
+
+	fn assert_keys_increase(animation: Node) {
+		let key_list = number_list(animation, "keyTimes");
+		assert!(
+			key_list.windows(2).all(|pair| pair[0] < pair[1]),
+			"{key_list:?}"
+		);
+	}
+
+	#[test]
+	fn dip_ramps_over_the_tick_before_and_after_a_run() {
+		let svg = dip_animation(&[(10, 14)]);
+		let document = Document::parse(&svg).unwrap();
+		assert!((dip_at(&document, 9) - 1.0).abs() < 1e-3);
+		assert!((dip_at(&document, 10) - LEGEND_DIP).abs() < 1e-3);
+		assert!((dip_at(&document, 15) - LEGEND_DIP).abs() < 1e-3);
+		assert!((dip_at(&document, 16) - 1.0).abs() < 1e-3);
+	}
+
+	#[test]
+	fn dip_key_times_strictly_increase() {
+		let last = dip_clock().ticks() - 1;
+		assert_eq!(dip(&[(last, last)], &dip_clock()), "");
+		let crossing_cases: [&[(usize, usize)]; 6] = [
+			&[(0, 2)],
+			&[(1, 2)],
+			&[(5, 6), (7, 8), (10, 11), (13, 14), (17, 18)],
+			&[(20, last - 1)],
+			&[(20, 22), (last - 1, last)],
+			&[(20, 22), (last, last)],
+		];
+		for crossing in crossing_cases {
+			let svg = dip_animation(crossing);
+			let document = Document::parse(&svg).unwrap();
+			assert_keys_increase(document.root_element().first_element_child().unwrap());
+			assert!((dip_at(&document, last) - 1.0).abs() < 1e-3, "{crossing:?}");
+		}
+		let svg = dip_animation(&[(0, 2)]);
+		let starts_low = Document::parse(&svg).unwrap();
+		assert!((dip_at(&starts_low, 0) - LEGEND_DIP).abs() < 1e-3);
+	}
+
+	#[test]
+	fn name_estimate_covers_rendered_width() {
+		for (name, rendered) in RENDERED_NAME_PX {
+			let estimate = name_width(name);
+			assert!(estimate >= rendered, "{name} {estimate} < {rendered}");
+			assert!(
+				estimate <= rendered * 1.25,
+				"{name} {estimate} >> {rendered}"
+			);
+		}
+	}
+
+	fn drawn_name_width(column: Node) -> f64 {
+		let label = name_text(column);
+		label.attribute("textLength").map_or_else(
+			|| name_width(label.text().unwrap()),
+			|length| length.parse().unwrap(),
+		)
+	}
+
+	#[test]
+	fn names_never_touch_at_rest() {
+		for data in [large(), real_like()] {
+			let slot = Race::new(&data, PACE).layout.slot;
+			let svg = render_languages(&data, Variant::Dark, PACE);
+			let document = Document::parse(&svg).unwrap();
+			let column_list: Vec<Node> = document
+				.descendants()
+				.filter(|node| node.attribute("data-column").is_some())
+				.collect();
+			for column in &column_list {
+				let drawn = drawn_name_width(*column);
+				assert!(drawn <= slot - NAME_GAP_PX, "{drawn}");
+			}
+			let mut placed: Vec<(f64, f64)> = column_list
+				.iter()
+				.filter(|column| column.attribute("opacity").is_none())
+				.map(|column| {
+					(
+						column_x(&document, column.attribute("data-column").unwrap()),
+						drawn_name_width(*column),
+					)
+				})
+				.collect();
+			placed.sort_by(|left, right| left.0.total_cmp(&right.0));
+			assert!(placed.len() > 10, "{}", placed.len());
+			for pair in placed.windows(2) {
+				let gap = (pair[1].0 - pair[0].0) - f64::midpoint(pair[0].1, pair[1].1);
+				assert!(gap >= NAME_GAP_PX, "{pair:?} {gap}");
+			}
+		}
+	}
+
+	fn leap() -> Timeline {
+		let mut usage = Usage::default();
+		spread(&mut usage, "Rust", 0..40, 40);
+		spread(&mut usage, "C", 0..40, 30);
+		spread(&mut usage, "Python", 0..40, 20);
+		spread(&mut usage, "Go", 0..40, 10);
+		spread(&mut usage, "Go", 20..21, 2000);
+		timeline(&usage, 4, 520)
+	}
+
+	fn opacity_at(node: Node, ms: f64) -> f64 {
+		node.children()
+			.find(|child| child.attribute("attributeName") == Some("opacity"))
+			.map_or(1.0, |fade| linear_at(fade, ms))
+	}
+
+	fn name_text<'a>(column: Node<'a, 'a>) -> Node<'a, 'a> {
+		let name = column.attribute("data-column").unwrap();
+		column
+			.descendants()
+			.find(|node| node.has_tag_name("text") && node.text() == Some(name))
+			.unwrap()
+	}
+
+	fn legend_opacity(column: Node, ms: f64) -> f64 {
+		name_text(column)
+			.ancestors()
+			.filter(Node::is_element)
+			.map(|ancestor| opacity_at(ancestor, ms))
+			.product()
+	}
+
+	fn assert_one_legend_group<'a>(column: Node<'a, 'a>) -> Node<'a, 'a> {
+		let legend = name_text(column)
+			.ancestors()
+			.find(|ancestor| ancestor.parent() == Some(column))
+			.unwrap();
+		for node in column.descendants() {
+			if node.has_tag_name("text") || node.has_tag_name("use") {
+				assert!(node.ancestors().any(|ancestor| ancestor == legend));
+			}
+		}
+		legend
+	}
+
+	struct Tracks<'a> {
+		column_list: Vec<Node<'a, 'a>>,
+		x_list: Vec<Vec<f64>>,
+		tick_ms: f64,
+		slot: f64,
+	}
+
+	impl<'a> Tracks<'a> {
+		fn of(document: &'a Document, slot: f64) -> Self {
+			let column_list: Vec<Node> = document
+				.descendants()
+				.filter(|node| node.attribute("data-column").is_some())
+				.collect();
+			let x_list: Vec<Vec<f64>> = column_list
+				.iter()
+				.map(|column| translate_list(*column))
+				.collect();
+			let slide = column_list[0]
+				.children()
+				.find(|child| child.attribute("type") == Some("translate"))
+				.unwrap();
+			let tick_ms = ms(slide, "dur") / float(x_list[0].len() - 1);
+			Self {
+				column_list,
+				x_list,
+				tick_ms,
+				slot,
+			}
+		}
+
+		fn ticks(&self) -> usize {
+			self.x_list[0].len()
+		}
+
+		fn x_at_half_tick(&self, lane: usize, half_tick: usize) -> f64 {
+			let track = &self.x_list[lane];
+			f64::midpoint(track[half_tick / 2], track[half_tick.div_ceil(2)])
+		}
+
+		fn close(&self, x_list: &[f64], left: usize, right: usize) -> bool {
+			(x_list[left] - x_list[right]).abs() < self.slot - 0.01
+		}
+
+		fn calm_at(&self, tick: usize) -> bool {
+			let same = |left: f64, right: f64| (left - right).abs() < 1e-9;
+			(0..self.column_list.len()).all(|lane| {
+				let mut window = tick - 2..=tick + 2;
+				let fade_list: Vec<f64> = window
+					.clone()
+					.map(|at| opacity_at(self.column_list[lane], float(at) * self.tick_ms))
+					.collect();
+				window.all(|at| same(self.x_list[lane][at], self.x_list[lane][tick]))
+					&& fade_list.iter().all(|fade| same(*fade, fade_list[0]))
+					&& (same(fade_list[0], 0.0) || same(fade_list[0], 1.0))
+			})
+		}
+	}
+
+	#[derive(Default)]
+	struct Seen {
+		crossing: usize,
+		dipped: usize,
+		spared: usize,
+		rest: usize,
+	}
+
+	fn assert_labels_never_overlap(data: &Timeline, pace: f64) -> Seen {
+		let slot = Race::new(data, pace).layout.slot;
+		let widest_label = slot - LABEL_PAD;
+		let svg = render_languages(data, Variant::Dark, pace);
+		let document = Document::parse(&svg).unwrap();
+		let tracks = Tracks::of(&document, slot);
+		let lanes = tracks.column_list.len();
+		for column in &tracks.column_list {
+			let legend = assert_one_legend_group(*column);
+			if let Some(dip) = legend
+				.children()
+				.find(|child| child.attribute("attributeName") == Some("opacity"))
+			{
+				assert_keys_increase(dip);
+			}
+		}
+		let mut seen = Seen::default();
+		for half_tick in 0..2 * (tracks.ticks() - 1) {
+			let at = float(half_tick) * tracks.tick_ms / 2.0;
+			let x_list: Vec<f64> = (0..lanes)
+				.map(|lane| tracks.x_at_half_tick(lane, half_tick))
+				.collect();
+			let opacity_list: Vec<f64> = tracks
+				.column_list
+				.iter()
+				.map(|column| legend_opacity(*column, at))
+				.collect();
+			for left in 0..lanes {
+				for right in left + 1..lanes {
+					if !tracks.close(&x_list, left, right) {
+						continue;
+					}
+					let apart = (x_list[left] - x_list[right]).abs() >= widest_label;
+					let lower = opacity_list[left].min(opacity_list[right]);
+					assert!(lower <= 0.15 || apart, "{at} {left} {right} {lower}");
+					let both_shown = opacity_at(tracks.column_list[left], at) > 0.0
+						&& opacity_at(tracks.column_list[right], at) > 0.0;
+					seen.crossing += usize::from(both_shown);
+					seen.spared += usize::from(both_shown && apart && lower > 0.99);
+					seen.dipped += usize::from(both_shown && !apart && lower <= 0.15);
+				}
+			}
+		}
+		for tick in 2..tracks.ticks() - 2 {
+			if !tracks.calm_at(tick) {
+				continue;
+			}
+			let at = float(tick) * tracks.tick_ms;
+			let shown: Vec<usize> = (0..lanes)
+				.filter(|lane| opacity_at(tracks.column_list[*lane], at) > 0.0)
+				.collect();
+			let x_list: Vec<f64> = (0..lanes)
+				.map(|lane| tracks.x_at_half_tick(lane, 2 * tick))
+				.collect();
+			let apart = shown.iter().all(|left| {
+				shown
+					.iter()
+					.all(|right| left == right || !tracks.close(&x_list, *left, *right))
+			});
+			if !apart {
+				continue;
+			}
+			for lane in shown {
+				let opacity = legend_opacity(tracks.column_list[lane], at);
+				assert!((opacity - 1.0).abs() < 1e-3, "{at} {lane} {opacity}");
+				seen.rest += 1;
+			}
+		}
+		seen
+	}
+
+	#[test]
+	fn crossing_columns_do_not_overlap_labels() {
+		let data = leap();
+		let race = Race::new(&data, PACE);
+		let go = race.lanes.iter().find(|lane| lane.name() == "Go").unwrap();
+		assert_eq!(go.x.first().copied(), Some(race.layout.center(3)));
+		assert_eq!(go.x.last().copied(), Some(race.layout.center(0)));
+		let mut spared = 0;
+		for (data, pace) in paced().chain([(leap(), PACE), (leap(), MIN_SECONDS_PER_YEAR)]) {
+			let seen = assert_labels_never_overlap(&data, pace);
+			assert!(seen.crossing > 0 && seen.dipped > 0 && seen.rest > 0);
+			spared += seen.spared;
+		}
+		assert!(spared > 0);
+		assert!(assert_labels_never_overlap(&large(), PACE).dipped > 0);
 	}
 
 	#[test]
