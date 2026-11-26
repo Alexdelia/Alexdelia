@@ -1,4 +1,4 @@
-use super::feeder::{LEFT_PRONG_X, POUCH_Y, PRONG_Y, RIGHT_PRONG_X, RING, SLING_X};
+use super::feeder::{LEFT_PRONG_X, POUCH_X, POUCH_Y, PRONG_Y, RIGHT_PRONG_X, RING, SLING_X};
 use super::format::{float, key_time, num, whole_ms};
 use super::schedule::{HEAT_MAX, HEAT_STEP_MS};
 
@@ -368,7 +368,7 @@ impl Burn {
 				"<g>{turn}{dots}<g stroke=\"#ffb347\" stroke-width=\"1.2\" stroke-linecap=\"round\">{tracers}</g></g>",
 				"</g>",
 			),
-			x = num(SLING_X, 1),
+			x = num(POUCH_X, 1),
 			y = num(POUCH_Y, 1),
 			fade = self.fade(SPARK_FROM, 1.0),
 			turn = self.sway(SPARK_FROM, 4, SPARK_TURN),

@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::f64::consts::TAU;
 
 use super::format::{escape, key_time, num, seconds, whole_ms};
 use super::heat::{EMBER_EXTENT, Heat};
@@ -11,24 +12,31 @@ pub(super) const FLIGHT_RADIUS: f64 = TOKEN_RADIUS / 2.0;
 pub(super) const FLIGHT_SCALE: f64 = FLIGHT_RADIUS / TOKEN_RADIUS;
 
 pub(super) const SLING_X: f64 = 36.0;
-const PRONG: f64 = 13.0;
+const PRONG: f64 = 11.0;
 pub(super) const RING: f64 = 4.5;
 const STROKE: f64 = 5.5;
-pub(super) const PRONG_Y: f64 = 200.0;
-const FOOT_Y: f64 = 294.0;
-const JOIN_Y: f64 = PRONG_Y + 44.0;
+const FOOT_Y: f64 = GROUND - 6.0;
+const SLING_HEIGHT: f64 = 46.0;
+pub(super) const PRONG_Y: f64 = FOOT_Y - SLING_HEIGHT;
+const JOIN_Y: f64 = PRONG_Y + SLING_HEIGHT / 2.0;
 pub(super) const LEFT_PRONG_X: f64 = SLING_X - PRONG;
 pub(super) const RIGHT_PRONG_X: f64 = SLING_X + PRONG;
 
-pub(super) const POUCH_Y: f64 = PRONG_Y + 6.0;
-const PULL_X: f64 = -14.0;
-const PULL_Y: f64 = 10.0;
+const BAND_END_Y: f64 = PRONG_Y + RING;
+const LEFT_END: Point = (LEFT_PRONG_X, BAND_END_Y);
+const RIGHT_END: Point = (RIGHT_PRONG_X, BAND_END_Y);
+const REST_SAG: f64 = 3.0;
+const QUADRATIC_TO_CUBIC: f64 = 2.0 / 3.0;
+const REST_MIDDLE: Point = (SLING_X, BAND_END_Y + REST_SAG);
+pub(super) const POUCH_X: f64 = SLING_X - 14.0;
+pub(super) const POUCH_Y: f64 = PRONG_Y + 16.0;
+const BAND_WIDTH: f64 = 1.5;
+const WRAP: f64 = FLIGHT_RADIUS + BAND_WIDTH / 2.0;
 const PULL_MS: u32 = 200;
-const QUICK_PULL_MS: u32 = 40;
+const MIN_PULL_MS: u32 = 40;
 const SNAP_FORWARD: f64 = 0.35;
 const SNAP_SWING_MS: u32 = 30;
 const SNAP_MS: u32 = 90;
-const BAND_WIDTH: f64 = 1.5;
 
 pub(super) const GRAVITY: f64 = 0.0024;
 const APEX_MARGIN: f64 = 10.0;
@@ -41,6 +49,15 @@ const FIRE_KEY_STEPS: f64 = 10_000.0;
 const VANISH_KEY_STEPS: f64 = 1_000.0;
 const THROW_SLACK_MS: f64 = 0.5;
 const THROW_SEARCH: u32 = 64;
+
+type Point = (f64, f64);
+
+#[derive(Clone, Copy)]
+enum Pull {
+	Rest,
+	Loaded,
+	Forward,
+}
 
 pub(super) struct Flight {
 	pub(super) lane: usize,
@@ -76,16 +93,25 @@ pub(super) fn feeder(
 	let burn = heat.burn(duration);
 	[
 		defs(flight_list, &burn.defs(), duration),
-		format!("<g data-rig=\"\">{}", burn.shake()),
-		burn.glow(),
+		format!("<g data-feed=\"\">{}", burn.shake()),
 		tube(flight_list, &burn.jiggle(), duration, colors),
-		slingshot(),
 		band(
 			flight_list,
 			&burn.band_stroke(colors.muted),
 			duration,
 			colors,
 		),
+		"</g>".to_owned(),
+	]
+	.concat()
+}
+
+pub(super) fn fork(heat: &Heat, duration: f64) -> String {
+	let burn = heat.burn(duration);
+	[
+		format!("<g data-rig=\"\">{}", burn.shake()),
+		burn.glow(),
+		slingshot(),
 		burn.flames(),
 		burn.bolt(),
 		burn.sparks(),
@@ -148,58 +174,102 @@ fn slingshot() -> String {
 	)
 }
 
-fn band_path(pull: f64) -> String {
+fn toward(from: Point, to: Point, part: f64) -> Point {
+	(
+		(to.0 - from.0).mul_add(part, from.0),
+		(to.1 - from.1).mul_add(part, from.1),
+	)
+}
+
+fn touch_angle(end: Point, turn: f64) -> f64 {
+	let (dx, dy) = (end.0 - POUCH_X, end.1 - POUCH_Y);
+	turn.mul_add((WRAP / dx.hypot(dy)).acos(), dy.atan2(dx))
+}
+
+fn on_wrap(angle: f64, reach: f64) -> Point {
+	(
+		WRAP.mul_add(angle.cos(), -reach * angle.sin()) + POUCH_X,
+		WRAP.mul_add(angle.sin(), reach * angle.cos()) + POUCH_Y,
+	)
+}
+
+fn wrapped_strap() -> [Point; 4] {
+	let from = touch_angle(LEFT_END, -1.0);
+	let to = touch_angle(RIGHT_END, 1.0);
+	let sweep = (to - from).rem_euclid(TAU) - TAU;
+	let handle = WRAP * 4.0 / 3.0 * (sweep / 4.0).tan();
+	[
+		on_wrap(from, 0.0),
+		on_wrap(from, handle),
+		on_wrap(to, -handle),
+		on_wrap(to, 0.0),
+	]
+}
+
+fn strap(pull: Pull) -> String {
+	let [left_touch, first, second, right_touch] = match pull {
+		Pull::Rest => {
+			let control = (SLING_X, REST_SAG.mul_add(2.0, BAND_END_Y));
+			[
+				LEFT_END,
+				toward(LEFT_END, control, QUADRATIC_TO_CUBIC),
+				toward(RIGHT_END, control, QUADRATIC_TO_CUBIC),
+				RIGHT_END,
+			]
+		}
+		Pull::Loaded => wrapped_strap(),
+		Pull::Forward => [toward(REST_MIDDLE, (POUCH_X, POUCH_Y), -SNAP_FORWARD); 4],
+	};
+	let point = |at: Point| format!("{} {}", num(at.0, 1), num(at.1, 1));
 	format!(
-		"M{} {}L{} {} {} {}",
-		num(LEFT_PRONG_X, 1),
-		num(PRONG_Y, 1),
-		num(PULL_X.mul_add(pull, SLING_X), 1),
-		num(PULL_Y.mul_add(pull, POUCH_Y), 1),
-		num(RIGHT_PRONG_X, 1),
-		num(PRONG_Y, 1),
+		"M{}L{}C{} {} {}L{}",
+		point(LEFT_END),
+		point(left_touch),
+		point(first),
+		point(second),
+		point(right_touch),
+		point(RIGHT_END),
 	)
 }
 
 fn band(flight_list: &[Flight], heat_stroke: &str, duration: f64, colors: Palette) -> String {
-	let rest = band_path(0.0);
+	let [rest, loaded, forward] = [Pull::Rest, Pull::Loaded, Pull::Forward].map(strap);
 	let mut fire_list: Vec<u32> = flight_list.iter().map(|flight| flight.fire_ms).collect();
 	fire_list.dedup();
 	let mut free_ms = 0;
-	let mut point_list: Vec<(f64, String)> = vec![(0.0, rest.clone())];
+	let mut held = false;
+	let starts_loaded = fire_list.first().is_some_and(|first| *first < MIN_PULL_MS);
+	let mut point_list: Vec<(u32, &str)> = vec![(0, if starts_loaded { &loaded } else { &rest })];
 	for (index, fire) in fire_list.iter().copied().enumerate() {
-		let span = fire.saturating_sub(free_ms).min(PULL_MS);
-		let pulled = span >= QUICK_PULL_MS;
-		if pulled {
+		if !held {
+			let pull_ms = free_ms.max(fire.saturating_sub(PULL_MS));
 			point_list.extend([
-				(f64::from(fire - span), rest.clone()),
-				(
-					f64::from(fire),
-					band_path(f64::from(span) / f64::from(PULL_MS)),
-				),
+				(pull_ms, point_list[point_list.len() - 1].1),
+				(fire, &loaded),
 			]);
 		}
-		let snaps = fire_list
+		held = fire_list
 			.get(index + 1)
-			.is_none_or(|next| next - fire >= SNAP_MS);
-		free_ms = fire;
-		if snaps {
-			if !pulled {
-				point_list.push((f64::from(fire), rest.clone()));
-			}
+			.is_some_and(|next| next - fire < SNAP_MS + MIN_PULL_MS);
+		if !held {
 			free_ms = fire + SNAP_MS;
 			point_list.extend([
-				(f64::from(fire + SNAP_SWING_MS), band_path(-SNAP_FORWARD)),
-				(f64::from(free_ms), rest.clone()),
+				(fire, loaded.as_str()),
+				(fire + SNAP_SWING_MS, &forward),
+				(free_ms, &rest),
 			]);
-		} else if pulled {
-			point_list.push((f64::from(fire), rest.clone()));
 		}
 	}
-	point_list.push((duration, rest.clone()));
-	let value_list: Vec<&str> = point_list.iter().map(|(_, path)| path.as_str()).collect();
+	point_list.dedup();
+	let value_list: Vec<&str> = point_list
+		.iter()
+		.map(|(_, path)| *path)
+		.chain([rest.as_str()])
+		.collect();
 	let key_list: Vec<String> = point_list
 		.iter()
-		.map(|(ms, _)| key_time(ms.min(duration), duration))
+		.map(|(ms, _)| key_time(f64::from(*ms).min(duration), duration))
+		.chain([key_time(duration, duration)])
 		.collect();
 	format!(
 		concat!(
@@ -267,7 +337,7 @@ fn launch(flight: &Flight, duration: f64) -> Launch {
 	let flown = land - fire;
 	let sunk = sunk_ms(flight);
 	let reach = (
-		(flight.to_x - SLING_X) * flown / (absorbed_ms(flight) - fire),
+		(flight.to_x - POUCH_X) * flown / (absorbed_ms(flight) - fire),
 		climb(flight) * flown,
 	);
 	let vanish_ms = whole(sunk.ceil());
@@ -389,7 +459,7 @@ fn circle(pool: &Pool, hide_ms: u32) -> String {
 			"</use>",
 		),
 		lane = pool.lane,
-		x = num(SLING_X, 1),
+		x = num(POUCH_X, 1),
 		deep = num(deep, 1),
 		name = escape(pool.name),
 		spline = FREE_FALL_SPLINE,
@@ -417,7 +487,8 @@ pub(super) fn flights(flight_list: &[Flight], duration: f64) -> String {
 #[cfg(test)]
 mod tests {
 	use super::super::probe::{
-		Pool as Probe, aimed_flight as aimed, test_flight as flight, wrapped,
+		Pool as Probe, aimed_flight as aimed, command_list, off_line, path_samples, point_list,
+		test_flight as flight, value_at, wrapped,
 	};
 	use super::*;
 	use crate::theme::{Variant, palette};
@@ -429,7 +500,7 @@ mod tests {
 		let fire_ms = 100;
 		let flight = Flight {
 			land_ms: fire_ms + u32::try_from(flight_ms(dx, landing_y)).unwrap(),
-			to_x: SLING_X + dx,
+			to_x: POUCH_X + dx,
 			..aimed(0, 0, fire_ms, landing_y)
 		};
 		let svg = wrapped(&flights(&[flight], DURATION));
@@ -442,7 +513,7 @@ mod tests {
 		let begin = probe.begin_list[0];
 		let landing = probe.reaching(begin, landing_y);
 		let absorbed = probe.at(f64::midpoint(landing, probe.vanish(begin)), begin);
-		assert!((absorbed.0 - SLING_X - dx).abs() <= 1.5, "{absorbed:?}");
+		assert!((absorbed.0 - POUCH_X - dx).abs() <= 1.5, "{absorbed:?}");
 		assert!(
 			(landing - begin - f64::from(u32::try_from(flight_ms(dx, landing_y)).unwrap())).abs()
 				<= 1.5
@@ -463,7 +534,7 @@ mod tests {
 		assert!(far_ms > near_ms + 30.0, "{near_ms} {far_ms}");
 		assert!(near_ms < 400.0, "{near_ms}");
 		let mut previous = (f64::INFINITY, 0.0);
-		for landing_y in [RESTING_Y, 260.0, 230.0, POUCH_Y, 180.0, 140.0, 94.0] {
+		for landing_y in [RESTING_Y, POUCH_Y, 260.0, 230.0, 180.0, 140.0, 94.0] {
 			let (apex, ms) = measured(300.0, landing_y);
 			assert!(
 				apex < previous.0 && ms > previous.1,
@@ -566,8 +637,266 @@ mod tests {
 		}
 	}
 
+	fn calm_and_rapid() -> Vec<Flight> {
+		vec![
+			flight(0, 0, 1_000),
+			flight(1, 0, 2_000),
+			flight(2, 0, 3_000),
+			flight(0, 0, 3_040),
+			flight(1, 0, 3_080),
+			flight(2, 0, 4_000),
+		]
+	}
+
+	fn emitted(flight_list: &[Flight]) -> String {
+		let heat = Heat {
+			start_ms: 0,
+			sample_list: Vec::new(),
+		};
+		wrapped(&format!(
+			"{}{}{}",
+			feeder(flight_list, &heat, DURATION, palette(Variant::Dark)),
+			flights(flight_list, DURATION),
+			fork(&heat, DURATION)
+		))
+	}
+
+	fn tagged<'a>(document: &'a Document, key: &str) -> Node<'a, 'a> {
+		document
+			.descendants()
+			.find(|node| node.has_attribute(key))
+			.unwrap()
+	}
+
+	fn number(node: Node, name: &str) -> f64 {
+		node.attribute(name).unwrap().parse().unwrap()
+	}
+
+	fn distance(from: (f64, f64), to: (f64, f64)) -> f64 {
+		(to.0 - from.0).hypot(to.1 - from.1)
+	}
+
+	fn band_shapes(band: Node) -> Vec<String> {
+		let animation = band.first_element_child().unwrap();
+		let mut shape_list = vec![band.attribute("d").unwrap().to_owned()];
+		shape_list.extend(
+			animation
+				.attribute("values")
+				.unwrap()
+				.split(';')
+				.map(str::to_owned),
+		);
+		shape_list
+	}
+
+	fn circumcenter(first: (f64, f64), second: (f64, f64), third: (f64, f64)) -> (f64, f64) {
+		let square = |point: (f64, f64)| point.0.mul_add(point.0, point.1 * point.1);
+		let twice_area = 2.0
+			* first.0.mul_add(
+				second.1 - third.1,
+				second
+					.0
+					.mul_add(third.1 - first.1, third.0 * (first.1 - second.1)),
+			);
+		(
+			square(first).mul_add(
+				second.1 - third.1,
+				square(second).mul_add(third.1 - first.1, square(third) * (first.1 - second.1)),
+			) / twice_area,
+			square(first).mul_add(
+				third.0 - second.0,
+				square(second).mul_add(first.0 - third.0, square(third) * (second.0 - first.0)),
+			) / twice_area,
+		)
+	}
+
+	fn ends(shape: &str) -> [(f64, f64); 2] {
+		let point_list: Vec<(f64, f64)> = command_list(shape)
+			.iter()
+			.flat_map(|(_, number_list)| point_list(number_list))
+			.collect();
+		[point_list[0], point_list[point_list.len() - 1]]
+	}
+
 	#[test]
-	fn quick_shots_skip_the_band_pull_and_calm_shots_snap_forward() {
+	fn band_sits_behind_the_fork_and_ends_under_the_rings() {
+		let svg = emitted(&calm_and_rapid());
+		let document = Document::parse(&svg).unwrap();
+		let order = |key: &str| {
+			document
+				.descendants()
+				.position(|node| node.has_attribute(key))
+				.unwrap()
+		};
+		assert!(order("data-band") < order("data-slingshot"));
+		let fork = tagged(&document, "data-slingshot");
+		let stroke = number(fork, "stroke-width");
+		let ring_list: Vec<((f64, f64), f64)> = fork
+			.descendants()
+			.filter(|node| node.has_tag_name("circle"))
+			.map(|ring| ((number(ring, "cx"), number(ring, "cy")), number(ring, "r")))
+			.collect();
+		let shape_list = band_shapes(tagged(&document, "data-band"));
+		assert!(shape_list.len() > 10, "{shape_list:?}");
+		for shape in shape_list {
+			for end in ends(&shape) {
+				let gap = ring_list
+					.iter()
+					.map(|(center, radius)| (distance(end, *center) - radius).abs())
+					.fold(f64::INFINITY, f64::min);
+				assert!(gap <= stroke / 2.0, "{shape} {end:?} {gap}");
+			}
+		}
+	}
+
+	#[test]
+	fn band_arcs_at_rest_and_bends_into_a_v_when_pulled() {
+		let flight_list = calm_and_rapid();
+		let svg = emitted(&flight_list);
+		let document = Document::parse(&svg).unwrap();
+		let band = tagged(&document, "data-band");
+		let animation = band.first_element_child().unwrap();
+		let rest = band.attribute("d").unwrap();
+		let rest_samples = path_samples(rest, 20);
+		let [first, last] = ends(rest);
+		assert!((first.1 - last.1).abs() < 1e-9, "{rest}");
+		let lowest = rest_samples
+			.iter()
+			.copied()
+			.max_by(|left, right| left.1.total_cmp(&right.1))
+			.unwrap();
+		assert!(lowest.1 > first.1 + 2.0, "{rest}");
+		assert!(rest_samples.iter().all(|point| point.1 >= first.1 - 1e-9));
+		let left_half: Vec<(f64, f64)> = rest_samples
+			.iter()
+			.copied()
+			.filter(|point| point.0 <= lowest.0)
+			.collect();
+		assert!(off_line(&left_half) > 0.3, "{rest}");
+		for flight in &flight_list {
+			let pulled = value_at(animation, f64::from(flight.fire_ms));
+			let command_list: Vec<(char, Vec<(f64, f64)>)> = command_list(&pulled)
+				.into_iter()
+				.map(|(letter, number_list)| (letter, point_list(&number_list)))
+				.collect();
+			let letter_list: String = command_list.iter().map(|(letter, _)| *letter).collect();
+			assert_eq!(letter_list, "MLCL", "{pulled}");
+			let left_end = command_list[0].1[0];
+			let left_touch = command_list[1].1[0];
+			let right_touch = command_list[2].1[2];
+			let right_end = command_list[3].1[0];
+			assert!(distance(left_end, left_touch) > 5.0, "{pulled}");
+			assert!(distance(right_end, right_touch) > 5.0, "{pulled}");
+			assert!(left_touch.1 > left_end.1 + 5.0, "{pulled}");
+			let wrap = path_samples(&pulled, 20)
+				.into_iter()
+				.skip(21)
+				.take(20)
+				.collect::<Vec<(f64, f64)>>();
+			let pouch = circumcenter(left_touch, wrap[9], right_touch);
+			let toward = |end: (f64, f64)| (end.1 - pouch.1).atan2(end.0 - pouch.0);
+			let opening = (toward(right_end) - toward(left_end)).abs().to_degrees();
+			assert!(opening > 30.0 && opening < 150.0, "{pulled} {opening}");
+			let spread = wrap
+				.iter()
+				.flat_map(|from| wrap.iter().map(|to| distance(*from, *to)))
+				.fold(0.0, f64::max);
+			assert!(spread < 4.0 * FLIGHT_RADIUS, "{pulled} {spread}");
+		}
+		let value_list: Vec<&str> = animation.attribute("values").unwrap().split(';').collect();
+		assert_eq!(value_list.last(), Some(&rest));
+		assert_eq!(animation.attribute("fill"), Some("freeze"));
+	}
+
+	#[test]
+	fn loaded_circle_sits_in_the_band() {
+		let svg = emitted(&calm_and_rapid());
+		let document = Document::parse(&svg).unwrap();
+		let band = tagged(&document, "data-band");
+		let animation = band.first_element_child().unwrap();
+		let touch = FLIGHT_RADIUS + number(band, "stroke-width") / 2.0;
+		let mut checked = 0;
+		for node in document
+			.descendants()
+			.filter(|node| node.has_attribute("data-flight"))
+		{
+			let probe = Probe::of(node);
+			for begin in &probe.begin_list {
+				let center = probe.at(*begin, *begin);
+				let shape = value_at(animation, *begin);
+				let [first, last] = ends(&shape);
+				let middle = (
+					f64::midpoint(first.0, last.0),
+					f64::midpoint(first.1, last.1),
+				);
+				let closest = path_samples(&shape, 200)
+					.into_iter()
+					.min_by(|left, right| {
+						distance(*left, center).total_cmp(&distance(*right, center))
+					})
+					.unwrap();
+				let gap = distance(closest, center);
+				assert!(
+					gap >= touch - 0.1 && gap <= touch + 0.2,
+					"{begin} {gap} {shape}"
+				);
+				let facing = (closest.0 - center.0).mul_add(
+					middle.0 - center.0,
+					(closest.1 - center.1) * (middle.1 - center.1),
+				);
+				assert!(facing < 0.0, "{begin} {closest:?} {shape}");
+				checked += 1;
+			}
+		}
+		assert_eq!(checked, 6);
+	}
+
+	#[test]
+	fn every_pull_lasts_long_enough_to_be_seen() {
+		let flight_list = [
+			flight(0, 0, 10),
+			flight(1, 0, 105),
+			flight(2, 0, 234),
+			flight(0, 0, 364),
+			flight(1, 0, 600),
+			flight(2, 0, 1_000),
+		];
+		let svg = emitted(&flight_list);
+		let document = Document::parse(&svg).unwrap();
+		let band = tagged(&document, "data-band");
+		let animation = band.first_element_child().unwrap();
+		let rest = band.attribute("d").unwrap();
+		let loaded = value_at(animation, 10.0);
+		assert_ne!(loaded, rest);
+		let value_list: Vec<&str> = animation.attribute("values").unwrap().split(';').collect();
+		let key_list: Vec<f64> = animation
+			.attribute("keyTimes")
+			.unwrap()
+			.split(';')
+			.map(|key| key.parse::<f64>().unwrap() * DURATION)
+			.collect();
+		let mut pulls = 0;
+		for index in 1..value_list.len() {
+			if value_list[index - 1] == rest && value_list[index] == loaded {
+				let span = key_list[index] - key_list[index - 1];
+				assert!(span >= 40.0 - 0.5, "{index} {span}");
+				pulls += 1;
+			}
+		}
+		assert_eq!(pulls, 3);
+		for flight in &flight_list {
+			assert_eq!(value_at(animation, f64::from(flight.fire_ms)), loaded);
+		}
+	}
+
+	#[test]
+	#[should_panic(expected = "unsupported path command Q")]
+	fn sampling_rejects_unknown_path_commands() {
+		path_samples("M0 0Q1 1 2 2", 2);
+	}
+
+	#[test]
+	fn rapid_shots_hold_the_band_pulled_and_calm_shots_snap_forward() {
 		let flight_list = [
 			flight(0, 0, 100),
 			flight(1, 0, 110),
@@ -575,11 +904,10 @@ mod tests {
 			flight(3, 0, 600),
 		];
 		let band = band(&flight_list, "", DURATION, palette(Variant::Light));
-		assert_eq!(band.matches(&band_path(0.5)).count(), 1, "{band}");
-		assert_eq!(band.matches(&band_path(1.0)).count(), 1, "{band}");
-		assert_eq!(band.matches(&band_path(-SNAP_FORWARD)).count(), 2, "{band}");
+		assert_eq!(band.matches(&strap(Pull::Loaded)).count(), 3, "{band}");
+		assert_eq!(band.matches(&strap(Pull::Forward)).count(), 2, "{band}");
 		assert!(
-			band.contains("keyTimes=\"0;0;.01;.01;.011;.014;.02;.04;.06;.063;.069;1\""),
+			band.contains("keyTimes=\"0;.01;.011;.014;.02;.04;.06;.063;.069;1\""),
 			"{band}"
 		);
 	}

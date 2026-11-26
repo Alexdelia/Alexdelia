@@ -357,3 +357,82 @@ pub(super) fn drop_at(node: Node, begin: f64, ms: f64) -> f64 {
 pub(super) fn drop_begins(node: Node) -> Vec<f64> {
 	clock_list(node.first_element_child().unwrap(), "begin")
 }
+
+pub(super) fn command_list(path: &str) -> Vec<(char, Vec<f64>)> {
+	let spaced: String = path
+		.chars()
+		.flat_map(|letter| {
+			if letter.is_ascii_alphabetic() {
+				vec![' ', letter, ' ']
+			} else {
+				vec![letter]
+			}
+		})
+		.collect();
+	let mut command_list: Vec<(char, Vec<f64>)> = Vec::new();
+	for part in spaced.split_whitespace() {
+		match part.parse::<f64>() {
+			Ok(value) => command_list.last_mut().unwrap().1.push(value),
+			Err(_) => command_list.push((part.chars().next().unwrap(), Vec::new())),
+		}
+	}
+	command_list
+}
+
+pub(super) fn point_list(number_list: &[f64]) -> Vec<(f64, f64)> {
+	number_list
+		.chunks(2)
+		.map(|pair| (pair[0], pair[1]))
+		.collect()
+}
+
+fn cubic(from: f64, first: f64, second: f64, to: f64, part: f64) -> f64 {
+	let rest = 1.0 - part;
+	(rest * rest * rest).mul_add(
+		from,
+		3.0f64.mul_add(
+			rest * part * rest.mul_add(first, part * second),
+			part * part * part * to,
+		),
+	)
+}
+
+pub(super) fn path_samples(path: &str, steps: u32) -> Vec<(f64, f64)> {
+	let mut at = (0.0, 0.0);
+	let mut sample_list = Vec::new();
+	for (letter, number_list) in command_list(path) {
+		let point_list = point_list(&number_list);
+		let part_list = (1..=steps).map(|step| float(step) / float(steps));
+		match letter {
+			'M' => {
+				at = point_list[0];
+				sample_list.push(at);
+			}
+			'L' => {
+				for to in point_list {
+					let from = at;
+					sample_list.extend(part_list.clone().map(|part| {
+						(
+							(to.0 - from.0).mul_add(part, from.0),
+							(to.1 - from.1).mul_add(part, from.1),
+						)
+					}));
+					at = to;
+				}
+			}
+			'C' => {
+				let [first, second, to] = [point_list[0], point_list[1], point_list[2]];
+				let from = at;
+				sample_list.extend(part_list.map(|part| {
+					(
+						cubic(from.0, first.0, second.0, to.0, part),
+						cubic(from.1, first.1, second.1, to.1, part),
+					)
+				}));
+				at = to;
+			}
+			other => panic!("unsupported path command {other}"),
+		}
+	}
+	sample_list
+}

@@ -7,18 +7,16 @@ use super::languages::WIDTH;
 use crate::theme::Palette;
 
 const MAX_CAPACITY: u32 = 64;
-const TUBE_TOP: f64 = 16.0;
+const TUBE_TOP: f64 = 8.0;
 const TUBE_BOTTOM: f64 = PRONG_Y - 6.0;
 const TUBE_RADIUS: f64 = FLIGHT_RADIUS;
 const TUBE_STEP: f64 = 2.0 * TUBE_RADIUS;
 const TUBE_WALL: f64 = TUBE_RADIUS + 3.0;
 const TUBE_REST_Y: f64 = TUBE_BOTTOM - TUBE_RADIUS;
-const WALL_OVERHANG: f64 = 8.0;
 const WINDOW_HEIGHT: f64 = 400.0;
 const BOUNCE_MS: u32 = 150;
 const BOUNCE_OVERSHOOT: f64 = 1.5;
 const BOUNCE_SPLINE: &str = ".5 0 1 1;0 0 .5 1";
-const DROP_MS: u32 = 400;
 const DROP_START_Y: f64 = TUBE_TOP - TUBE_RADIUS;
 const DROP_SLACK: f64 = 0.5;
 const JITTER_SALT: u64 = 9;
@@ -185,6 +183,14 @@ impl Queue {
 	}
 }
 
+fn fall_ms(depth: f64) -> i64 {
+	whole_ms((2.0 * depth / GRAVITY).sqrt())
+}
+
+fn drop_ms() -> u32 {
+	u32::try_from(fall_ms(TUBE_BOTTOM + TUBE_STEP - DROP_START_Y)).unwrap_or(u32::MAX)
+}
+
 fn drop_y(release_ms: u32, ms: u32) -> f64 {
 	let fallen = f64::from(ms - release_ms);
 	(GRAVITY / 2.0 * fallen).mul_add(fallen, DROP_START_Y)
@@ -196,13 +202,13 @@ fn release_ms(flight: &Flight, place: usize, queue: &Queue) -> Option<u32> {
 		return None;
 	}
 	let slot = TUBE_STEP.mul_add(float(queue.fired(enter)) - float(place), TUBE_REST_Y);
-	let fall = whole_ms((2.0 * (slot - DROP_START_Y) / GRAVITY).sqrt());
+	let fall = fall_ms(slot - DROP_START_Y);
 	let release = enter.checked_sub(u32::try_from(fall).unwrap_or(u32::MAX))?;
 	let clear_above = queue.events(release, enter).iter().all(|event| {
 		drop_y(release, *event) + TUBE_RADIUS <= queue.edge_before(*event) + DROP_SLACK
 	});
 	let hidden_below = queue
-		.events(enter - 1, release + DROP_MS)
+		.events(enter - 1, release + drop_ms())
 		.iter()
 		.all(|event| {
 			drop_y(release, *event) - TUBE_RADIUS >= queue.edge_after(*event) - DROP_SLACK
@@ -228,7 +234,7 @@ fn drops(flight_list: &[Flight]) -> String {
 	if pool_list.is_empty() {
 		return String::new();
 	}
-	let deep = drop_y(0, DROP_MS);
+	let deep = drop_y(0, drop_ms());
 	let use_list: Vec<String> = pool_list
 		.iter()
 		.map(|(lane, fall_list)| {
@@ -244,7 +250,7 @@ fn drops(flight_list: &[Flight]) -> String {
 				deep = num(deep, 1),
 				spline = FREE_FALL_SPLINE,
 				lift = num(DROP_START_Y - deep, 1),
-				dur = DROP_MS,
+				dur = drop_ms(),
 				begins = begin_list.join(";"),
 			)
 		})
@@ -262,7 +268,7 @@ pub(super) fn tube(flight_list: &[Flight], jiggle: &str, duration: f64, colors: 
 		format!(
 			"M{} {}V{}",
 			num(x, 1),
-			num(TUBE_TOP - WALL_OVERHANG, 1),
+			num(TUBE_TOP, 1),
 			num(TUBE_BOTTOM + 2.0, 1)
 		)
 	};
@@ -319,7 +325,7 @@ mod tests {
 	use super::super::format::seconds;
 	use super::super::languages::TOKEN_RADIUS;
 	use super::super::probe::{
-		drop_at, drop_begins, test_flight as flight, value_at, vertex_list, wrapped,
+		command_list, drop_at, drop_begins, test_flight as flight, value_at, vertex_list, wrapped,
 	};
 	use super::*;
 	use crate::theme::{Variant, palette};
@@ -355,7 +361,7 @@ mod tests {
 		let places = (TUBE_BOTTOM - TUBE_TOP) / TUBE_STEP;
 		let capacity = f64::from(u32::try_from(tube_capacity()).unwrap());
 		assert!(capacity <= places && capacity + 1.0 > places, "{capacity}");
-		assert_eq!(tube_capacity(), 17);
+		assert_eq!(tube_capacity(), 23);
 		assert!(FLIGHT_SCALE.mul_add(-TOKEN_RADIUS, TUBE_RADIUS).abs() < 1e-9);
 	}
 
@@ -596,5 +602,119 @@ mod tests {
 		assert!(x_list.iter().all(|x| x.abs() <= 1.0), "{x_list:?}");
 		assert!(x_list.iter().any(|x| *x > 0.5) && x_list.iter().any(|x| *x < -0.5));
 		assert!(x_list.iter().any(|x| x.abs() < 0.5));
+	}
+
+	fn clip_box(document: &Document, id: &str) -> (f64, f64) {
+		let rect = document
+			.descendants()
+			.find(|node| node.attribute("id") == Some(id))
+			.unwrap()
+			.first_element_child()
+			.unwrap();
+		let top: f64 = rect.attribute("y").unwrap().parse().unwrap();
+		let height: f64 = rect.attribute("height").unwrap().parse().unwrap();
+		(top, top + height)
+	}
+
+	fn second_number(text: &str) -> f64 {
+		text.split(' ').nth(1).unwrap().parse().unwrap()
+	}
+
+	#[test]
+	fn tube_circles_are_whole_below_the_tube_top() {
+		let capacity = u32::try_from(tube_capacity()).unwrap();
+		let fire_ms = |index: u32| 1_000 + 200 * index;
+		let flight_list: Vec<Flight> = (0..capacity + 8)
+			.map(|index| {
+				let enter = index.checked_sub(capacity).map_or(0, fire_ms);
+				flight(usize::try_from(index % 3).unwrap(), enter, fire_ms(index))
+			})
+			.collect();
+		let svg = rendered(&flight_list);
+		let document = Document::parse(&svg).unwrap();
+		let tube = document
+			.descendants()
+			.find(|node| node.has_attribute("data-tube"))
+			.unwrap();
+		let tube_top = command_list(tube.first_element_child().unwrap().attribute("d").unwrap())
+			.into_iter()
+			.filter(|(letter, _)| *letter == 'M')
+			.map(|(_, number_list)| number_list[1])
+			.fold(f64::INFINITY, f64::min);
+		let (outer_top, outer_bottom) = clip_box(&document, "tb");
+		let (inner_top, inner_bottom) = clip_box(&document, "tc");
+		let window = document
+			.descendants()
+			.find(|node| node.attribute("attributeName") == Some("y"))
+			.unwrap();
+		let step_node = tube
+			.descendants()
+			.find(|node| node.has_attribute("data-step"))
+			.unwrap();
+		let step = step_node.first_element_child().unwrap();
+		let bounce = tube
+			.descendants()
+			.find(|node| node.attribute("calcMode") == Some("spline"))
+			.unwrap();
+		let bounce_list: Vec<f64> = bounce
+			.attribute("begin")
+			.unwrap()
+			.split(';')
+			.map(|begin| begin.trim_end_matches('s').parse::<f64>().unwrap() * 1_000.0)
+			.collect();
+		let lift = second_number(
+			bounce
+				.attribute("values")
+				.unwrap()
+				.split(';')
+				.next()
+				.unwrap(),
+		);
+		let vertex_y: Vec<f64> = step_node
+			.descendants()
+			.filter(|node| node.has_attribute("marker-mid"))
+			.flat_map(|tape| {
+				let mut tape_vertices = vertex_list(tape.attribute("d").unwrap());
+				tape_vertices.pop();
+				tape_vertices
+			})
+			.map(|vertex| vertex.1)
+			.collect();
+		let mut instant_list: Vec<f64> = flight_list
+			.iter()
+			.flat_map(|flight| [flight.enter_ms, flight.fire_ms])
+			.map(f64::from)
+			.collect();
+		instant_list.sort_by(f64::total_cmp);
+		instant_list.dedup();
+		let mut lifted = 0;
+		for at in instant_list {
+			let bouncing = bounce_list.iter().any(|begin| (begin - at).abs() < 0.5);
+			let shift = if bouncing { lift } else { 0.0 };
+			let edge: f64 = value_at(window, at).parse().unwrap();
+			let offset = second_number(&value_at(step, at));
+			for local in vertex_y.iter().map(|y| y + offset) {
+				let waiting = local - TUBE_RADIUS >= edge - 0.01;
+				let fired = local - TUBE_RADIUS >= inner_bottom - 0.01;
+				let shown = local + shift;
+				if !waiting || fired || shown < tube_top + TUBE_RADIUS - 1e-9 {
+					continue;
+				}
+				assert!(
+					shown - TUBE_RADIUS >= outer_top - 1e-9
+						&& shown + TUBE_RADIUS <= outer_bottom + 1e-9,
+					"{at} {shown}"
+				);
+				assert!(
+					local - TUBE_RADIUS >= inner_top - 1e-9
+						&& local + TUBE_RADIUS <= inner_bottom + 1e-9,
+					"{at} {local}"
+				);
+				if bouncing {
+					lifted += 1;
+				}
+			}
+		}
+		assert!(lifted > 5, "{lifted}");
 	}
 }

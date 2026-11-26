@@ -2,7 +2,7 @@ use super::clock::{Clock, race_ms};
 use super::crossing::{Track, close_runs};
 use super::feed::{Feed, Shown, feed_list, growth, paired, shown_list, throw_list};
 use super::feeder::{
-	FLIGHT_RADIUS, Flight, SLING_X, absorbed_ms, feeder, flight_ms, flights, throw_ms,
+	FLIGHT_RADIUS, Flight, POUCH_X, absorbed_ms, feeder, flight_ms, flights, fork, throw_ms,
 };
 use super::format::{
 	animate, animate_transform, arrow, compact, discrete, escape, float, key_time, month, num,
@@ -79,6 +79,7 @@ pub fn render_languages(timeline: &Timeline, variant: Variant, seconds_per_year:
 			.collect::<Vec<_>>()
 			.concat(),
 		flights(&race.flight_list, race.clock.duration()),
+		fork(&race.heat, race.clock.duration()),
 		date_and_totals(timeline, &race.clock),
 		"</svg>".to_owned(),
 	]
@@ -192,7 +193,7 @@ impl<'a> Race<'a> {
 			&throw_list(&feed_list, provisional.tick_ms, |feed| {
 				let slot = cell_at(&row_list[feed.lane], feed.frame).slot;
 				flight_ms(
-					layout.center(slot) - SLING_X,
+					layout.center(slot) - POUCH_X,
 					landing_y(bar_height(feed.fed_before, top_lines)),
 				)
 			}),
@@ -301,17 +302,17 @@ fn aim_x(flight: &Flight, x_list: &[f64], tick_ms: u32, half_width: f64) -> f64 
 	let share = (land - fire) / (absorbed - fire);
 	let column = x_at(x_list, land, tick_ms);
 	let reach = (half_width - CONTACT_MARGIN).max(0.0);
-	let contact = (x_at(x_list, absorbed, tick_ms) - SLING_X)
-		.mul_add(share, SLING_X)
+	let contact = (x_at(x_list, absorbed, tick_ms) - POUCH_X)
+		.mul_add(share, POUCH_X)
 		.clamp(column - reach, column + reach);
-	SLING_X + (contact - SLING_X) / share
+	POUCH_X + (contact - POUCH_X) / share
 }
 
 fn x_at(x_list: &[f64], ms: f64, tick_ms: u32) -> f64 {
 	let tick = u32::try_from(whole_ms(ms.floor())).unwrap_or(u32::MAX) / tick_ms;
 	let last = x_list.len().saturating_sub(1);
 	let index = usize::try_from(tick).unwrap_or(usize::MAX).min(last);
-	let from = x_list.get(index).copied().unwrap_or(SLING_X);
+	let from = x_list.get(index).copied().unwrap_or(POUCH_X);
 	let to = x_list.get(index + 1).copied().unwrap_or(from);
 	(to - from).mul_add((ms / f64::from(tick_ms) - float(index)).min(1.0), from)
 }
@@ -581,7 +582,7 @@ fn shown_ticks(shown: &[Shown], clock: &Clock) -> Vec<bool> {
 		.map(|tick| {
 			let ms = clock.ms(tick);
 			run_list.iter().any(|run| {
-				run.on - margin <= ms && run.off.is_none_or(|off| ms <= off + FADE_MS + margin)
+				run.on - margin <= ms && run.off.is_none_or(|off| ms < off + FADE_MS + margin)
 			})
 		})
 		.collect()
@@ -800,7 +801,7 @@ fn date_and_totals(timeline: &Timeline, clock: &Clock) -> String {
 
 #[cfg(test)]
 mod tests {
-	use super::super::feeder::{POUCH_Y, SLING_X};
+	use super::super::feeder::POUCH_Y;
 	use super::super::probe::{
 		Pool, drop_at, drop_begins, linear_at, off_line, vertex_list, wrapped,
 	};
@@ -1514,7 +1515,7 @@ mod tests {
 	}
 
 	fn assert_starts_in_pouch(start: (f64, f64)) {
-		assert!((start.0 - SLING_X).abs() <= 1.0, "{start:?}");
+		assert!((start.0 - POUCH_X).abs() <= 1.0, "{start:?}");
 		assert!((start.1 - POUCH_Y).abs() <= 1.0, "{start:?}");
 	}
 
@@ -2004,6 +2005,61 @@ mod tests {
 			assert!((foot.0 - right_prong.0).abs() < 0.01);
 			assert!(foot.1 < GROUND);
 		}
+	}
+
+	#[test]
+	fn slingshot_is_at_most_half_as_tall() {
+		let svg = render_languages(&fixture(), Variant::Dark, PACE);
+		let document = Document::parse(&svg).unwrap();
+		let ring_list: Vec<(f64, f64)> = tagged(&document, "data-slingshot", "fork")
+			.descendants()
+			.filter(|node| node.has_tag_name("circle"))
+			.map(|ring| (number(ring, "cx"), number(ring, "cy")))
+			.collect();
+		let foot = ring_list
+			.iter()
+			.copied()
+			.max_by(|left, right| left.1.total_cmp(&right.1))
+			.unwrap();
+		let prong_list: Vec<(f64, f64)> = ring_list
+			.iter()
+			.copied()
+			.filter(|ring| *ring != foot)
+			.collect();
+		assert_eq!(prong_list.len(), 2);
+		assert!(
+			(prong_list[0].0 - prong_list[1].0).abs() <= 22.0,
+			"{prong_list:?}"
+		);
+		for prong in prong_list {
+			assert!(foot.1 - prong.1 <= 47.0, "{prong:?} {foot:?}");
+		}
+		assert!((GROUND - foot.1).abs() <= 8.0, "{foot:?}");
+	}
+
+	#[test]
+	fn fork_is_painted_over_flights_and_flights_over_columns() {
+		let svg = render_languages(&fixture(), Variant::Dark, PACE);
+		let document = Document::parse(&svg).unwrap();
+		let order: Vec<Node> = document.descendants().collect();
+		let place = |node: Node| order.iter().position(|other| *other == node).unwrap();
+		let fork = place(tagged(&document, "data-slingshot", "fork"));
+		let flight_list: Vec<usize> = flight_nodes(&document).into_iter().map(place).collect();
+		let last_column = document
+			.descendants()
+			.filter(|node| node.has_attribute("data-column"))
+			.flat_map(|column| column.descendants())
+			.map(place)
+			.max()
+			.unwrap();
+		assert!(flight_list.len() > 5, "{}", flight_list.len());
+		for flight in flight_list {
+			assert!(
+				last_column < flight && flight < fork,
+				"{last_column} {flight} {fork}"
+			);
+		}
+		assert!(place(tagged(&document, "data-band", "")) < fork);
 	}
 
 	#[test]
@@ -2504,6 +2560,28 @@ mod tests {
 
 	fn dip_clock() -> Clock {
 		Clock::new(40, 3_900, 0)
+	}
+
+	#[test]
+	fn fade_ending_on_a_tick_stops_counting_one_tick_later() {
+		let clock = dip_clock();
+		let off = 10.0f64.mul_add(f64::from(clock.tick_ms), -FADE_MS);
+		let on_tick = shown_ticks(
+			&[Shown {
+				on: 0.0,
+				off: Some(off),
+			}],
+			&clock,
+		);
+		assert!(on_tick[10] && !on_tick[11], "{on_tick:?}");
+		let past_tick = shown_ticks(
+			&[Shown {
+				on: 0.0,
+				off: Some(off + 1.0),
+			}],
+			&clock,
+		);
+		assert!(past_tick[11] && !past_tick[12], "{past_tick:?}");
 	}
 
 	fn dip_animation(crossing: &[(usize, usize)]) -> String {
