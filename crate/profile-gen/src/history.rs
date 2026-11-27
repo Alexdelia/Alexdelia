@@ -15,7 +15,7 @@ use crate::language::{Detector, Language};
 pub type Week = Date;
 pub type Weeks = BTreeMap<Week, BTreeMap<&'static str, u64>>;
 
-const MAX_ADDED_PER_FILE: u64 = 5000;
+pub(crate) const MAX_ADDED_PER_FILE: u64 = 5000;
 const PATCH_SUFFIX: &str = ".patch";
 const PATCH_PATHSPEC: &str = ":(icase)*.patch";
 const WHOLE_FILE_CONTEXT: &str = "--unified=1000000";
@@ -62,7 +62,7 @@ pub fn weekly_added(
 		.map(|weeks| (weeks, Some(head)))
 }
 
-fn is_patch(path: &str) -> bool {
+pub(crate) fn is_patch(path: &str) -> bool {
 	path.to_lowercase().ends_with(PATCH_SUFFIX)
 }
 
@@ -388,12 +388,12 @@ fn parse_patch_touches(
 	})
 }
 
-struct Numstat<'a> {
-	added: Option<u64>,
-	path: &'a str,
+pub(crate) struct Numstat<'a> {
+	pub(crate) added: Option<u64>,
+	pub(crate) path: &'a str,
 }
 
-fn split_numstat(token: &str) -> Option<Numstat<'_>> {
+pub(crate) fn split_numstat(token: &str) -> Option<Numstat<'_>> {
 	let mut fields = token.trim_start_matches('\n').splitn(3, '\t');
 	match (fields.next(), fields.next(), fields.next()) {
 		(Some(added), Some(_), Some(path)) => Some(Numstat {

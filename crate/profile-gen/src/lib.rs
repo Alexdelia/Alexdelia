@@ -9,6 +9,7 @@ pub mod github;
 pub mod history;
 pub mod icons;
 pub mod language;
+pub mod ownership;
 pub mod render;
 pub mod run;
 pub mod theme;

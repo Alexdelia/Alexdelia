@@ -37,6 +37,45 @@ impl FixtureRepo {
 		unix_ts: i64,
 		changes: &[(&str, Option<&str>)],
 	) {
+		self.commit_with_message(author_email, unix_ts, "fixture", changes);
+	}
+
+	pub(crate) fn commit_with_message(
+		&self,
+		author_email: &str,
+		unix_ts: i64,
+		message: &str,
+		changes: &[(&str, Option<&str>)],
+	) {
+		self.write(changes);
+		self.git(&["add", "-A"], author_email, unix_ts);
+		self.git(&["commit", "-q", "-m", message], author_email, unix_ts);
+	}
+
+	pub(crate) fn branch(&self, name: &str) {
+		self.git(&["switch", "-q", "-c", name], "committer@example.com", 0);
+	}
+
+	pub(crate) fn switch(&self, name: &str) {
+		self.git(&["switch", "-q", name], "committer@example.com", 0);
+	}
+
+	pub(crate) fn merge(
+		&self,
+		author_email: &str,
+		unix_ts: i64,
+		branch: &str,
+		changes: &[(&str, Option<&str>)],
+	) {
+		self.git(
+			&["merge", "-q", "--no-ff", "--no-commit", branch],
+			author_email,
+			unix_ts,
+		);
+		self.commit_with_message(author_email, unix_ts, "fixture merge", changes);
+	}
+
+	fn write(&self, changes: &[(&str, Option<&str>)]) {
 		for (path, content) in changes {
 			let full = self.path().join(path);
 			match content {
@@ -47,8 +86,6 @@ impl FixtureRepo {
 				None => std::fs::remove_file(full).unwrap(),
 			}
 		}
-		self.git(&["add", "-A"], author_email, unix_ts);
-		self.git(&["commit", "-q", "-m", "fixture"], author_email, unix_ts);
 	}
 
 	pub(crate) fn empty_commit(&self, author_email: &str, unix_ts: i64) {
