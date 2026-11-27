@@ -28,6 +28,7 @@ let
       types = [ "text" ];
     };
     no-lint-suppression = policyHook "no-lint-suppression" "\\.rs$";
+    file-size = policyHook "file-size" "\\.rs$";
 
     deadnix = {
       enable = true;

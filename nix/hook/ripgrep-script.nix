@@ -2,6 +2,9 @@
 name:
 pkgs.writeShellApplication {
   inherit name;
-  runtimeInputs = [ pkgs.ripgrep ];
+  runtimeInputs = [
+    pkgs.coreutils
+    pkgs.ripgrep
+  ];
   text = builtins.readFile ./${name}.bash;
 }
