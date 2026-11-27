@@ -81,6 +81,15 @@ pub(super) fn compact(lines: u64) -> String {
 	}
 }
 
+pub(super) fn signed_compact(change: i64) -> String {
+	let sign = match change.cmp(&0) {
+		std::cmp::Ordering::Greater => "+",
+		std::cmp::Ordering::Less => "-",
+		std::cmp::Ordering::Equal => "",
+	};
+	format!("{sign}{}", compact(change.unsigned_abs()))
+}
+
 pub(super) const fn arrow(direction: Direction) -> &'static str {
 	match direction {
 		Direction::Up => "&#x2191;",
@@ -147,6 +156,21 @@ mod tests {
 		];
 		for (lines, expected) in cases {
 			assert_eq!(compact(lines), expected);
+		}
+	}
+
+	#[test]
+	fn signed_compact_marks_direction() {
+		let cases = [
+			(1_234, "+1.2k"),
+			(-300, "-300"),
+			(0, "0"),
+			(1, "+1"),
+			(-12_345_678, "-12M"),
+			(i64::MIN, "-9223372036854M"),
+		];
+		for (change, expected) in cases {
+			assert_eq!(signed_compact(change), expected);
 		}
 	}
 

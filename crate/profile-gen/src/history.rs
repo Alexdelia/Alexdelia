@@ -1,7 +1,5 @@
-use std::collections::{BTreeMap, HashSet};
-use std::io::{BufRead, BufReader};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
-use std::process::{Child, ChildStdout, Output, Stdio};
 
 use jiff::civil::Date;
 use jiff::tz::Offset;
@@ -11,21 +9,23 @@ use crate::attributes::{Attribute, attributes};
 use crate::error::Result;
 use crate::git;
 use crate::language::{Detector, Language};
+use crate::ownership::{Owned, Ownership, ignored_revs, owned_lines_ignoring, ownership};
 
 pub type Week = Date;
-pub type Weeks = BTreeMap<Week, BTreeMap<&'static str, u64>>;
+pub type LanguageDeltas = BTreeMap<&'static str, i64>;
+pub type LanguageLines = BTreeMap<&'static str, u64>;
+pub type Deltas = BTreeMap<Week, LanguageDeltas>;
+pub type PathLines = BTreeMap<String, LanguageLines>;
 
 pub(crate) const MAX_ADDED_PER_FILE: u64 = 5000;
 const PATCH_SUFFIX: &str = ".patch";
-const PATCH_PATHSPEC: &str = ":(icase)*.patch";
-const WHOLE_FILE_CONTEXT: &str = "--unified=1000000";
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
-#[derive(Debug)]
-struct Touch {
-	week: Week,
-	path: String,
-	added: u64,
-	patched: Option<String>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Walk {
+	pub head: String,
+	pub paths: PathLines,
+	pub deltas: Deltas,
 }
 
 #[must_use]
@@ -37,355 +37,391 @@ pub fn week_of(unix_ts: i64) -> Week {
 	date.saturating_sub(Span::new().days(since_monday))
 }
 
-pub fn weekly_added(
-	repo: &Path,
-	since: Option<&str>,
-	authors: &[String],
-	detector: &Detector,
-) -> Result<(Weeks, Option<String>)> {
-	let Some(head) = git::head_sha(repo)? else {
-		return Ok((Weeks::new(), None));
-	};
-	let wanted: HashSet<String> = authors.iter().map(|author| author.to_lowercase()).collect();
-	let range = since.map_or_else(|| "HEAD".to_owned(), |sha| format!("{sha}..HEAD"));
-	read_touches(repo, &range, &wanted)
-		.and_then(|touches| with_patched_lines(repo, &range, &wanted, touches))
-		.and_then(|touches| {
-			let paths: Vec<String> = touches
-				.iter()
-				.map(|touch| touch.path.clone())
-				.collect::<HashSet<_>>()
-				.into_iter()
-				.collect();
-			attributes(repo, &paths).map(|attribute_map| tally(&touches, &attribute_map, detector))
-		})
-		.map(|weeks| (weeks, Some(head)))
-}
-
 pub(crate) fn is_patch(path: &str) -> bool {
 	path.to_lowercase().ends_with(PATCH_SUFFIX)
 }
 
-fn with_patched_lines(
-	repo: &Path,
-	range: &str,
-	wanted: &HashSet<String>,
-	touches: Vec<Touch>,
-) -> Result<Vec<Touch>> {
-	let (patches, plain): (Vec<Touch>, Vec<Touch>) =
-		touches.into_iter().partition(|touch| is_patch(&touch.path));
-	if patches.is_empty() {
-		return Ok(plain);
+pub fn add_deltas(target: &mut Deltas, source: &Deltas) {
+	for (week, bucket) in source {
+		let sum = target.entry(*week).or_default();
+		for (language, delta) in bucket {
+			*sum.entry(language).or_default() += delta;
+		}
+		sum.retain(|_, delta| *delta != 0);
 	}
-	read_patch_touches(repo, range, wanted)
-		.map(|patched| plain.into_iter().chain(patched).collect())
+	target.retain(|_, bucket| !bucket.is_empty());
 }
 
-fn tally(
-	touches: &[Touch],
-	attribute_map: &std::collections::HashMap<String, Attribute>,
+pub fn walk(
+	repo: &Path,
+	since: Option<(&str, &PathLines)>,
+	authors: &[String],
 	detector: &Detector,
-) -> Weeks {
-	let mut weeks = Weeks::new();
-	for touch in touches {
-		if let Some(language) = resolve_language(touch, attribute_map[&touch.path], detector) {
-			*weeks
-				.entry(touch.week)
-				.or_default()
-				.entry(language.name)
-				.or_default() += touch.added;
-		}
-	}
-	weeks
+) -> Result<Option<Walk>> {
+	git::head_sha(repo).and_then(|head| match (head, since) {
+		(Some(head), Some((last_sha, paths))) if head == last_sha => Ok(Some(Walk {
+			head,
+			paths: paths.clone(),
+			deltas: Deltas::new(),
+		})),
+		_ => walk_new_commits(repo, since, authors, detector),
+	})
 }
 
-fn resolve_language(touch: &Touch, attribute: Attribute, detector: &Detector) -> Option<Language> {
-	match (attribute, &touch.patched) {
-		(Attribute::Skip, _) => None,
-		(_, Some(target)) => detector.detect(target),
-		(Attribute::Language(name), None) => detector.count(name),
-		(Attribute::Default, None) => detector.detect(&touch.path),
-	}
-}
-
-fn read_touches(repo: &Path, range: &str, wanted: &HashSet<String>) -> Result<Vec<Touch>> {
-	let args = [
-		"log",
-		"--no-merges",
-		"-M",
-		"--numstat",
-		"-z",
-		"--format=%H%x00%ae%x00%at",
-		range,
-	];
-	run_log(repo, &args, |reader| parse_touches(reader, wanted))
-}
-
-fn read_patch_touches(repo: &Path, range: &str, wanted: &HashSet<String>) -> Result<Vec<Touch>> {
-	let args = [
-		"log",
-		"--no-merges",
-		"-M",
-		"-p",
-		"--no-prefix",
-		WHOLE_FILE_CONTEXT,
-		"--format=%x00%ae%x00%at",
-		range,
-		"--",
-		PATCH_PATHSPEC,
-	];
-	run_log(repo, &args, |reader| parse_patch_touches(reader, wanted))
-}
-
-fn run_log(
+fn walk_new_commits(
 	repo: &Path,
-	args: &[&str],
-	parse: impl FnOnce(BufReader<ChildStdout>) -> std::io::Result<Vec<Touch>>,
-) -> Result<Vec<Touch>> {
-	git::command(repo)
-		.args(args)
-		.stdout(Stdio::piped())
-		.stderr(Stdio::piped())
-		.spawn()
-		.and_then(|child| collect(child, parse))
-		.map_err(Into::into)
-		.and_then(|(touches, output)| {
-			if output.status.success() {
-				Ok(touches)
-			} else {
-				Err(git::failure(repo, args, &output.stderr))
-			}
+	since: Option<(&str, &PathLines)>,
+	authors: &[String],
+	detector: &Detector,
+) -> Result<Option<Walk>> {
+	ownership(repo, authors).and_then(|ownership| {
+		let mut ignored_at: Option<(String, Vec<String>)> = None;
+		walk_with(repo, since, &ownership, detector, |commit, path| {
+			let ignored = match ignored_at.take() {
+				Some((at, ignored)) if at == commit => Ok(ignored),
+				_ => ignored_revs(repo, commit, &ownership),
+			};
+			ignored.and_then(|ignored| {
+				let owned = owned_lines_ignoring(repo, commit, path, &ownership, &ignored);
+				ignored_at = Some((commit.to_owned(), ignored));
+				owned
+			})
 		})
+	})
 }
 
-fn collect(
-	mut child: Child,
-	parse: impl FnOnce(BufReader<ChildStdout>) -> std::io::Result<Vec<Touch>>,
-) -> std::io::Result<(Vec<Touch>, Output)> {
-	let touches = child
-		.stdout
-		.take()
-		.map(|stdout| parse(BufReader::new(stdout)))
+fn walk_with(
+	repo: &Path,
+	since: Option<(&str, &PathLines)>,
+	ownership: &Ownership,
+	detector: &Detector,
+	blame: impl FnMut(&str, &str) -> Result<Owned>,
+) -> Result<Option<Walk>> {
+	git::head_sha(repo).and_then(|head| {
+		head.map(|head| {
+			snapshots(repo, since.map(|(sha, _)| sha)).and_then(|snapshot_list| {
+				let start = Walker {
+					repo,
+					ownership,
+					detector,
+					blame,
+					previous: since.map(|(sha, _)| sha.to_owned()),
+					paths: since.map_or_default(|(_, paths)| paths.clone()),
+					deltas: Deltas::new(),
+				};
+				snapshot_list
+					.into_iter()
+					.try_fold(start, |walker, (week, commit)| walker.advance(week, commit))
+					.map(|walker| Walk {
+						head,
+						paths: walker.paths,
+						deltas: walker.deltas,
+					})
+			})
+		})
 		.transpose()
-		.map(Option::unwrap_or_default);
-	let exit = child.wait_with_output();
-	touches.and_then(|touches| exit.map(|output| (touches, output)))
+	})
 }
 
-fn read_token(reader: &mut impl BufRead, delimiter: u8) -> std::io::Result<Option<String>> {
-	let mut bytes = Vec::new();
-	reader.read_until(delimiter, &mut bytes).map(|read| {
-		(read > 0).then(|| {
-			if bytes.last() == Some(&delimiter) {
-				bytes.pop();
+fn snapshots(repo: &Path, since: Option<&str>) -> Result<Vec<(Week, String)>> {
+	let fresh = since.map(|sha| new_commits(repo, sha)).transpose();
+	fresh.and_then(|fresh| {
+		first_parent_weeks(repo).map(|chain| {
+			let mut snapshot_list: Vec<(Week, String)> = Vec::new();
+			let unseen = chain
+				.into_iter()
+				.filter(|(_, sha)| fresh.as_ref().is_none_or(|fresh| fresh.contains(sha)));
+			for (week, sha) in unseen {
+				if snapshot_list.last().is_some_and(|(last, _)| *last == week) {
+					snapshot_list.pop();
+				}
+				snapshot_list.push((week, sha));
 			}
-			String::from_utf8_lossy(&bytes).into_owned()
+			snapshot_list
 		})
 	})
 }
 
-fn feed_tokens(
-	mut reader: impl BufRead,
-	delimiter: u8,
-	mut feed: impl FnMut(&str),
-) -> std::io::Result<()> {
-	let mut failure = None;
-	std::iter::from_fn(|| match read_token(&mut reader, delimiter) {
-		Ok(token) => token,
-		Err(error) => {
-			failure = Some(std::io::Error::new(
-				error.kind(),
-				format!("reading git log output: {error}"),
-			));
-			None
-		}
+fn new_commits(repo: &Path, since: &str) -> Result<HashSet<String>> {
+	let range = format!("{since}..HEAD");
+	git::run(repo, &["rev-list", "--first-parent", &range]).map(|listed| {
+		String::from_utf8_lossy(&listed)
+			.lines()
+			.map(str::to_owned)
+			.collect()
 	})
-	.for_each(|token| feed(&token));
-	failure.map_or(Ok(()), Err)
 }
 
-fn commit_week(timestamp: &str, counted: bool) -> Option<Week> {
-	timestamp.parse().ok().map(week_of).filter(|_| counted)
+fn first_parent_weeks(repo: &Path) -> Result<Vec<(Week, String)>> {
+	let args = [
+		"log",
+		"--first-parent",
+		"--reverse",
+		"--format=%ct %H",
+		"HEAD",
+	];
+	git::run(repo, &args).map(|log| {
+		String::from_utf8_lossy(&log)
+			.lines()
+			.filter_map(|line| line.split_once(' '))
+			.scan(Date::MIN, |latest, (timestamp, sha)| {
+				*latest = (*latest).max(week_of(timestamp.parse().unwrap_or_default()));
+				Some((*latest, sha.to_owned()))
+			})
+			.collect()
+	})
 }
 
 #[derive(Debug)]
-enum Phase {
-	Sha,
-	Email,
-	Timestamp {
-		counted: bool,
-	},
-	Entries {
-		week: Option<Week>,
-	},
-	RenamedFrom {
-		week: Option<Week>,
-		added: Option<u64>,
-	},
-	RenamedTo {
-		week: Option<Week>,
-		added: Option<u64>,
+enum Change {
+	Changed(String),
+	Deleted(String),
+	Moved {
+		from: String,
+		to: String,
+		source_kept: bool,
 	},
 }
 
-struct Parser<'a> {
-	wanted: &'a HashSet<String>,
-	phase: Phase,
-	touches: Vec<Touch>,
-}
+impl Change {
+	fn source(&self) -> &str {
+		match self {
+			Self::Changed(path) | Self::Deleted(path) | Self::Moved { from: path, .. } => path,
+		}
+	}
 
-impl Parser<'_> {
-	fn feed(&mut self, token: &str) {
-		self.phase = match std::mem::replace(&mut self.phase, Phase::Sha) {
-			Phase::Sha => Phase::Email,
-			Phase::Email => Phase::Timestamp {
-				counted: self.wanted.contains(&token.to_lowercase()),
-			},
-			Phase::Timestamp { counted } => Phase::Entries {
-				week: commit_week(token, counted),
-			},
-			Phase::Entries { week } => self.feed_entry(token, week),
-			Phase::RenamedFrom { week, added } => Phase::RenamedTo { week, added },
-			Phase::RenamedTo { week, added } => {
-				self.record(week, added, token);
-				Phase::Entries { week }
+	fn target(&self) -> Option<&str> {
+		match self {
+			Self::Changed(path) | Self::Moved { to: path, .. } => Some(path),
+			Self::Deleted(_) => None,
+		}
+	}
+
+	fn gone(&self) -> Option<&str> {
+		match self {
+			Self::Deleted(path)
+			| Self::Moved {
+				from: path,
+				source_kept: false,
+				..
+			} => Some(path),
+			Self::Changed(_)
+			| Self::Moved {
+				source_kept: true, ..
+			} => None,
+		}
+	}
+
+	fn candidate(&self, paths: &PathLines, touched: &HashSet<String>) -> Option<String> {
+		let counted = match self {
+			Self::Changed(path) => paths.contains_key(path) || touched.contains(path),
+			Self::Moved { from, to, .. } => {
+				paths.contains_key(from) || touched.contains(from) || touched.contains(to)
 			}
+			Self::Deleted(_) => false,
 		};
+		self.target().filter(|_| counted).map(str::to_owned)
+	}
+}
+
+fn read_change<'a>(status: &str, tokens: &mut impl Iterator<Item = &'a str>) -> Change {
+	let path = tokens.next().unwrap_or_default().to_owned();
+	match status.as_bytes().first() {
+		Some(b'D') => Change::Deleted(path),
+		Some(kind @ (b'R' | b'C')) => Change::Moved {
+			to: tokens.next().unwrap_or_default().to_owned(),
+			from: path,
+			source_kept: *kind == b'C',
+		},
+		_ => Change::Changed(path),
+	}
+}
+
+fn changes(repo: &Path, previous: Option<&str>, commit: &str) -> Result<Vec<Change>> {
+	let base = previous.unwrap_or(EMPTY_TREE);
+	let args = [
+		"diff-tree",
+		"-r",
+		"--name-status",
+		"-z",
+		"-M",
+		"-C",
+		base,
+		commit,
+	];
+	git::run(repo, &args).map(|output| {
+		let output = String::from_utf8_lossy(&output);
+		let mut tokens = output.split('\0').filter(|token| !token.is_empty());
+		std::iter::from_fn(|| tokens.next().map(|status| read_change(status, &mut tokens)))
+			.collect()
+	})
+}
+
+fn touched_by_me(
+	repo: &Path,
+	previous: Option<&str>,
+	commit: &str,
+	ownership: &Ownership,
+	paths: &PathLines,
+) -> Result<HashSet<String>> {
+	let range = previous.map_or_else(|| commit.to_owned(), |base| format!("{base}..{commit}"));
+	let args = [
+		"log",
+		"--reverse",
+		"--no-merges",
+		"--name-status",
+		"-M",
+		"-z",
+		"--format=%x00%H",
+		&range,
+	];
+	git::run(repo, &args)
+		.map(|log| follow_touches(&String::from_utf8_lossy(&log), ownership, paths))
+}
+
+fn follow_touches(log: &str, ownership: &Ownership, paths: &PathLines) -> HashSet<String> {
+	let mut touched = HashSet::new();
+	for (sha, change_list) in commits(log) {
+		let reaches_my_lines = change_list.iter().any(|change| {
+			let source = change.source();
+			paths.contains_key(source) || touched.contains(source)
+		});
+		if reaches_my_lines || ownership.is_mine(sha) {
+			touched.extend(
+				change_list
+					.iter()
+					.filter_map(Change::target)
+					.map(str::to_owned),
+			);
+		}
+	}
+	touched
+}
+
+fn commits(log: &str) -> Vec<(&str, Vec<Change>)> {
+	let mut commit_list: Vec<(&str, Vec<Change>)> = vec![("", Vec::new())];
+	let mut tokens = log.split('\0');
+	while let Some(token) = tokens.next() {
+		if token.is_empty() {
+			commit_list.push((tokens.next().unwrap_or_default(), Vec::new()));
+		} else {
+			let current = commit_list.len() - 1;
+			commit_list[current]
+				.1
+				.push(read_change(token.trim_start_matches('\n'), &mut tokens));
+		}
+	}
+	commit_list
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Counting {
+	Plain(Language),
+	Patch,
+}
+
+fn counting(path: &str, attribute: Attribute, detector: &Detector) -> Option<Counting> {
+	match attribute {
+		Attribute::Skip => None,
+		_ if is_patch(path) => Some(Counting::Patch),
+		Attribute::Language(name) => detector.count(name).map(Counting::Plain),
+		Attribute::Default => detector.detect(path).map(Counting::Plain),
+	}
+}
+
+fn signed(lines: u64) -> i64 {
+	i64::try_from(lines).unwrap_or(i64::MAX)
+}
+
+struct Walker<'a, B> {
+	repo: &'a Path,
+	ownership: &'a Ownership,
+	detector: &'a Detector,
+	blame: B,
+	previous: Option<String>,
+	paths: PathLines,
+	deltas: Deltas,
+}
+
+impl<B: FnMut(&str, &str) -> Result<Owned>> Walker<'_, B> {
+	fn advance(mut self, week: Week, commit: String) -> Result<Self> {
+		let previous = self.previous.as_deref();
+		changes(self.repo, previous, &commit)
+			.and_then(|change_list| {
+				touched_by_me(self.repo, previous, &commit, self.ownership, &self.paths)
+					.map(|touched| (change_list, touched))
+			})
+			.and_then(|(change_list, touched)| {
+				let candidates: Vec<String> = change_list
+					.iter()
+					.filter_map(|change| change.candidate(&self.paths, &touched))
+					.collect::<BTreeSet<_>>()
+					.into_iter()
+					.collect();
+				let mut delta = LanguageDeltas::new();
+				for gone in change_list.iter().filter_map(Change::gone) {
+					let old = self.paths.remove(gone).unwrap_or_default();
+					shift(&mut delta, &old, -1);
+				}
+				self.recount(&commit, &candidates, delta)
+			})
+			.map(|delta| {
+				add_deltas(&mut self.deltas, &Deltas::from([(week, delta)]));
+				self.previous = Some(commit);
+				self
+			})
 	}
 
-	fn feed_entry(&mut self, token: &str, week: Option<Week>) -> Phase {
-		match split_numstat(token) {
-			None => Phase::Email,
-			Some(entry) if entry.path.is_empty() => Phase::RenamedFrom {
-				week,
-				added: entry.added,
-			},
-			Some(entry) => {
-				self.record(week, entry.added, entry.path);
-				Phase::Entries { week }
+	fn recount(
+		&mut self,
+		commit: &str,
+		candidates: &[String],
+		delta: LanguageDeltas,
+	) -> Result<LanguageDeltas> {
+		attributes(self.repo, candidates).and_then(|attribute_map| {
+			candidates
+				.iter()
+				.filter_map(|path| {
+					counting(path, attribute_map[path], self.detector).map(|kind| (path, kind))
+				})
+				.try_fold(delta, |mut delta, (path, kind)| {
+					(self.blame)(commit, path).map(|owned| {
+						let new = language_lines(self.detector, kind, &owned);
+						let old = self.paths.remove(path).unwrap_or_default();
+						shift(&mut delta, &old, -1);
+						shift(&mut delta, &new, 1);
+						if !new.is_empty() {
+							self.paths.insert(path.clone(), new);
+						}
+						delta
+					})
+				})
+		})
+	}
+}
+
+fn language_lines(detector: &Detector, kind: Counting, owned: &Owned) -> LanguageLines {
+	let mut lines = LanguageLines::new();
+	match kind {
+		Counting::Plain(language) => {
+			lines.insert(language.name, owned.plain);
+		}
+		Counting::Patch => {
+			for (target, count) in &owned.patched {
+				if let Some(language) = detector.detect(target) {
+					*lines.entry(language.name).or_default() += count;
+				}
 			}
 		}
 	}
-
-	fn record(&mut self, week: Option<Week>, added: Option<u64>, path: &str) {
-		let within_cap = added.filter(|added| (1..=MAX_ADDED_PER_FILE).contains(added));
-		if let (Some(week), Some(added)) = (week, within_cap) {
-			self.touches.push(Touch {
-				week,
-				path: path.to_owned(),
-				added,
-				patched: None,
-			});
-		}
-	}
+	lines.retain(|_, count| *count > 0);
+	lines
 }
 
-fn parse_touches(reader: impl BufRead, wanted: &HashSet<String>) -> std::io::Result<Vec<Touch>> {
-	let mut parser = Parser {
-		wanted,
-		phase: Phase::Sha,
-		touches: Vec::new(),
-	};
-	feed_tokens(reader, 0, |token| parser.feed(token)).map(|()| parser.touches)
-}
-
-struct PatchParser<'a> {
-	wanted: &'a HashSet<String>,
-	week: Option<Week>,
-	file: Option<String>,
-	in_hunk: bool,
-	after_old_header: bool,
-	target: Option<String>,
-	added: u64,
-	target_lines: BTreeMap<String, u64>,
-	touches: Vec<Touch>,
-}
-
-impl PatchParser<'_> {
-	fn feed(&mut self, line: &str) {
-		let line = line.trim_end_matches('\r');
-		if let Some(header) = line.strip_prefix('\0') {
-			self.flush();
-			self.week = header.split_once('\0').and_then(|(email, timestamp)| {
-				commit_week(timestamp, self.wanted.contains(&email.to_lowercase()))
-			});
-		} else if line.starts_with("diff --git ") {
-			self.flush();
-		} else if self.in_hunk {
-			self.feed_hunk(line);
-		} else {
-			self.feed_header(line);
-		}
+fn shift(delta: &mut LanguageDeltas, lines: &LanguageLines, sign: i64) {
+	for (language, count) in lines {
+		*delta.entry(language).or_default() += sign * signed(*count);
 	}
-
-	fn feed_header(&mut self, line: &str) {
-		if let Some(path) = line.strip_prefix("+++ ") {
-			self.file = Some(git::unquote_path(path));
-		}
-		self.in_hunk = line.starts_with("@@ ");
-	}
-
-	fn feed_hunk(&mut self, line: &str) {
-		if let Some(content) = line.strip_prefix('+') {
-			self.added += 1;
-			self.feed_content(content, true);
-		} else if let Some(content) = line.strip_prefix(' ') {
-			self.feed_content(content, false);
-		}
-	}
-
-	fn feed_content(&mut self, content: &str, added: bool) {
-		let after_old_header =
-			std::mem::replace(&mut self.after_old_header, content.starts_with("--- "));
-		if let Some(target) = content.strip_prefix("+++ ").filter(|_| after_old_header) {
-			self.target = Some(git::unquote_path(target));
-		} else if added
-			&& content.starts_with('+')
-			&& let Some(target) = &self.target
-		{
-			*self.target_lines.entry(target.clone()).or_default() += 1;
-		}
-	}
-
-	fn flush(&mut self) {
-		let target_lines = std::mem::take(&mut self.target_lines);
-		let added = std::mem::take(&mut self.added);
-		let file = self.file.take();
-		self.in_hunk = false;
-		self.after_old_header = false;
-		self.target = None;
-		let within_cap = (1..=MAX_ADDED_PER_FILE).contains(&added);
-		if let (Some(week), Some(path), true) = (self.week, file, within_cap) {
-			self.touches
-				.extend(target_lines.into_iter().map(|(target, added)| Touch {
-					week,
-					path: path.clone(),
-					added,
-					patched: Some(target),
-				}));
-		}
-	}
-}
-
-fn parse_patch_touches(
-	reader: impl BufRead,
-	wanted: &HashSet<String>,
-) -> std::io::Result<Vec<Touch>> {
-	let mut parser = PatchParser {
-		wanted,
-		week: None,
-		file: None,
-		in_hunk: false,
-		after_old_header: false,
-		target: None,
-		added: 0,
-		target_lines: BTreeMap::new(),
-		touches: Vec::new(),
-	};
-	feed_tokens(reader, b'\n', |line| parser.feed(line)).map(|()| {
-		parser.flush();
-		parser.touches
-	})
 }
 
 pub(crate) struct Numstat<'a> {
@@ -408,449 +444,490 @@ pub(crate) fn split_numstat(token: &str) -> Option<Numstat<'_>> {
 mod tests {
 	use super::*;
 	use crate::fixture::{FixtureRepo, shipped_detector};
+	use crate::ownership::owned_lines;
 
 	const WEEK_ONE_TS: i64 = 1_795_392_000;
-	const WEEK_SECONDS: i64 = 7 * 24 * 3600;
+	const DAY_SECONDS: i64 = 24 * 3600;
+	const WEEK_SECONDS: i64 = 7 * DAY_SECONDS;
+	const ME: &str = "me@x";
+	const FRIEND: &str = "friend@x";
 
-	fn lines(count: usize) -> String {
-		"x\n".repeat(count)
+	fn code(tag: &str, range: std::ops::Range<usize>) -> String {
+		range
+			.map(|index| format!("int {tag}_value_{index}_alpha = compute_value({index}, 2, 3);\n"))
+			.collect::<Vec<_>>()
+			.concat()
 	}
 
-	fn authors(list: &[&str]) -> Vec<String> {
-		list.iter().map(|author| (*author).to_owned()).collect()
+	fn at(week: i64) -> i64 {
+		WEEK_ONE_TS + week * WEEK_SECONDS
 	}
 
-	fn week(year: i16, month: i8, day: i8) -> Week {
-		Date::constant(year, month, day)
+	fn week(offset: i64) -> Week {
+		Date::constant(2026, 11, 23).saturating_add(Span::new().weeks(offset))
 	}
 
-	fn bucket(entries: &[(&'static str, u64)]) -> BTreeMap<&'static str, u64> {
-		entries.iter().copied().collect()
+	fn deltas(entries: &[(i64, &[(&'static str, i64)])]) -> Deltas {
+		entries
+			.iter()
+			.map(|(offset, bucket)| (week(*offset), bucket.iter().copied().collect()))
+			.collect()
+	}
+
+	fn lines(entries: &[(&str, &[(&'static str, u64)])]) -> PathLines {
+		entries
+			.iter()
+			.map(|(path, bucket)| ((*path).to_owned(), bucket.iter().copied().collect()))
+			.collect()
+	}
+
+	fn me() -> Vec<String> {
+		vec![ME.to_owned()]
+	}
+
+	fn assert_levels_hold(walk: &Walk, since: Option<&PathLines>) {
+		let mut levels: BTreeMap<&str, i64> = BTreeMap::new();
+		for lines in since.into_iter().flat_map(BTreeMap::values) {
+			for (language, count) in lines {
+				*levels.entry(language).or_default() += signed(*count);
+			}
+		}
+		for (week, bucket) in &walk.deltas {
+			for (language, delta) in bucket {
+				let level = levels.entry(language).or_default();
+				*level += delta;
+				assert!(*level >= 0, "{language} below zero at {week}: {walk:?}");
+			}
+		}
+		let mut existing: BTreeMap<&str, i64> = BTreeMap::new();
+		for lines in walk.paths.values() {
+			for (language, count) in lines {
+				*existing.entry(language).or_default() += signed(*count);
+			}
+		}
+		levels.retain(|_, level| *level != 0);
+		assert_eq!(levels, existing, "{walk:?}");
+	}
+
+	fn walked(repo: &Path, since: Option<(&str, &PathLines)>) -> Walk {
+		let walk = walk(repo, since, &me(), &shipped_detector())
+			.unwrap()
+			.unwrap();
+		assert_levels_hold(&walk, since.map(|(_, paths)| paths));
+		walk
+	}
+
+	fn walked_recording(repo: &Path) -> (Walk, BTreeSet<String>) {
+		let ownership = ownership(repo, &me()).unwrap();
+		let mut blamed = BTreeSet::new();
+		let walk = walk_with(
+			repo,
+			None,
+			&ownership,
+			&shipped_detector(),
+			|commit, path| {
+				blamed.insert(path.to_owned());
+				owned_lines(repo, commit, path, &ownership)
+			},
+		)
+		.unwrap()
+		.unwrap();
+		assert_levels_hold(&walk, None);
+		(walk, blamed)
 	}
 
 	#[test]
 	fn week_of_is_monday_utc() {
-		assert_eq!(week_of(WEEK_ONE_TS), week(2026, 11, 23));
-		assert_eq!(week_of(WEEK_ONE_TS + 7 * 86_400 - 60), week(2026, 11, 23));
-		assert_eq!(week_of(WEEK_ONE_TS + 7 * 86_400), week(2026, 11, 30));
+		assert_eq!(week_of(WEEK_ONE_TS), week(0));
+		assert_eq!(week_of(WEEK_ONE_TS + WEEK_SECONDS - 60), week(0));
+		assert_eq!(week_of(WEEK_ONE_TS + WEEK_SECONDS), week(1));
 	}
 
 	#[test]
-	fn counts_added_lines_per_language_per_week() {
+	fn deleting_my_code_lowers_the_week() {
 		let repo = FixtureRepo::new();
-		repo.commit("me@x", WEEK_ONE_TS, &[("a.rs", Some(&lines(10)))]);
-		repo.commit("other@x", WEEK_ONE_TS + 1, &[("b.rs", Some(&lines(100)))]);
 		repo.commit(
-			"me@x",
-			WEEK_ONE_TS + 2 * WEEK_SECONDS,
-			&[("c.c", Some(&lines(4)))],
+			ME,
+			at(0),
+			&[
+				("a.c", Some(&code("a", 0..10))),
+				("b.rs", Some(&code("b", 0..5))),
+			],
+		);
+		repo.commit(FRIEND, at(0) + 1, &[("f.c", Some(&code("f", 0..7)))]);
+		repo.commit(ME, at(1), &[("a.c", Some(&code("a", 0..6)))]);
+		repo.commit(FRIEND, at(2), &[("b.rs", None)]);
+
+		let walk = walked(repo.path(), None);
+
+		assert_eq!(walk.head, repo.head());
+		assert_eq!(
+			walk.deltas,
+			deltas(&[
+				(0, &[("C", 10), ("Rust", 5)]),
+				(1, &[("C", -4)]),
+				(2, &[("Rust", -5)]),
+			])
+		);
+		assert_eq!(walk.paths, lines(&[("a.c", &[("C", 6)])]));
+	}
+
+	#[test]
+	fn rename_by_teammate_keeps_my_lines() {
+		let repo = FixtureRepo::new();
+		repo.commit(ME, at(0), &[("a.c", Some(&code("a", 0..6)))]);
+		repo.mv("a.c", "dir/b.c", at(1));
+		repo.commit(
+			FRIEND,
+			at(2),
+			&[("dir/b.c", None), ("dir/c.h", Some(&code("a", 0..6)))],
 		);
 
-		let (weeks, head) =
-			weekly_added(repo.path(), None, &authors(&["me@x"]), &shipped_detector()).unwrap();
+		let walk = walked(repo.path(), None);
 
-		assert_eq!(head, Some(repo.head()));
+		assert_eq!(walk.deltas, deltas(&[(0, &[("C", 6)])]));
+		assert_eq!(walk.paths, lines(&[("dir/c.h", &[("C", 6)])]));
+	}
+
+	#[test]
+	fn rename_in_the_week_i_wrote_the_file_keeps_my_lines() {
+		let repo = FixtureRepo::new();
+		repo.commit(FRIEND, at(0), &[("seed.c", Some(&code("s", 0..2)))]);
+		repo.commit(ME, at(1), &[("a.c", Some(&code("a", 0..6)))]);
+		repo.mv("a.c", "b.c", at(1) + 1);
+
+		let walk = walked(repo.path(), None);
+
+		assert_eq!(walk.deltas, deltas(&[(1, &[("C", 6)])]));
+		assert_eq!(walk.paths, lines(&[("b.c", &[("C", 6)])]));
+	}
+
+	#[test]
+	fn moved_files_are_blamed_only_when_i_touched_them() {
+		let repo = FixtureRepo::new();
+		let friend_code = code("f", 0..6);
+		let other_code = code("k", 0..6);
+		repo.commit(
+			FRIEND,
+			at(0),
+			&[("f.c", Some(&friend_code)), ("k.c", Some(&other_code))],
+		);
+		repo.commit(ME, at(0) + 1, &[("a.c", Some(&code("a", 0..3)))]);
+		repo.mv("f.c", "g.c", at(1));
+		repo.commit(ME, at(2), &[("g.c", None), ("h.c", Some(&friend_code))]);
+		repo.commit(
+			ME,
+			at(3),
+			&[("k.c", Some(&format!("{other_code}int mine_added = 1;\n")))],
+		);
+		repo.mv("k.c", "m.c", at(3) + 1);
+
+		let (walk, blamed) = walked_recording(repo.path());
+
 		assert_eq!(
-			weeks,
-			Weeks::from([
-				(week(2026, 11, 23), bucket(&[("Rust", 10)])),
-				(week(2026, 12, 7), bucket(&[("C", 4)])),
+			blamed,
+			BTreeSet::from(["a.c".to_owned(), "h.c".to_owned(), "m.c".to_owned()])
+		);
+		assert_eq!(walk.deltas, deltas(&[(0, &[("C", 3)]), (3, &[("C", 1)])]));
+		assert_eq!(
+			walk.paths,
+			lines(&[("a.c", &[("C", 3)]), ("m.c", &[("C", 1)])])
+		);
+	}
+
+	fn numbered(range: std::ops::Range<usize>) -> String {
+		code("mine", range)
+	}
+
+	#[test]
+	fn teammate_splits_my_file_into_new_files_keeps_my_lines() {
+		let repo = FixtureRepo::new();
+		repo.commit(ME, at(0), &[("a.c", Some(&numbered(0..30)))]);
+		repo.commit(
+			FRIEND,
+			at(1),
+			&[
+				("a.c", Some(&numbered(0..10))),
+				("b.c", Some(&numbered(10..20))),
+				("c.c", Some(&numbered(20..30))),
+			],
+		);
+
+		let walk = walked(repo.path(), None);
+
+		assert_eq!(walk.deltas, deltas(&[(0, &[("C", 30)])]));
+		assert_eq!(
+			walk.paths,
+			lines(&[
+				("a.c", &[("C", 10)]),
+				("b.c", &[("C", 10)]),
+				("c.c", &[("C", 10)]),
 			])
 		);
 	}
 
 	#[test]
-	fn skips_binary_lockfiles_attributes_and_huge_files() {
+	fn teammate_moves_my_lines_into_existing_file_keeps_them() {
 		let repo = FixtureRepo::new();
+		let theirs = code("f", 0..8);
+		repo.commit(FRIEND, at(0), &[("f.c", Some(&theirs))]);
+		repo.commit(ME, at(0) + 1, &[("a.c", Some(&numbered(0..20)))]);
 		repo.commit(
-			"me@x",
-			WEEK_ONE_TS,
+			FRIEND,
+			at(1),
 			&[
-				(
-					".gitattributes",
-					Some("libft/** linguist-vendored\n*.inc linguist-language=C\n"),
-				),
-				("logo.png", Some("\0\0\0png")),
-				("Cargo.lock", Some(&lines(50))),
-				("libft/ft.c", Some(&lines(50))),
-				("huge.c", Some(&lines(5001))),
-				("gen.inc", Some(&lines(3))),
+				("a.c", Some(&numbered(0..10))),
+				("f.c", Some(&format!("{theirs}{}", numbered(10..20)))),
 			],
 		);
 
-		let (weeks, _) =
-			weekly_added(repo.path(), None, &authors(&["me@x"]), &shipped_detector()).unwrap();
+		let walk = walked(repo.path(), None);
 
+		assert_eq!(walk.deltas, deltas(&[(0, &[("C", 20)])]));
 		assert_eq!(
-			weeks,
-			Weeks::from([(week(2026, 11, 23), bucket(&[("C", 3)]))])
+			walk.paths,
+			lines(&[("a.c", &[("C", 10)]), ("f.c", &[("C", 10)])])
 		);
 	}
 
 	#[test]
-	fn cap_is_per_file_and_inclusive() {
+	fn heavy_rename_and_edit_in_one_week_keeps_my_lines() {
 		let repo = FixtureRepo::new();
+		repo.commit(ME, at(0), &[("a.c", Some(&numbered(0..6)))]);
+		repo.mv("a.c", "b.c", at(1));
 		repo.commit(
-			"me@x",
-			WEEK_ONE_TS,
+			FRIEND,
+			at(1) + 1,
+			&[(
+				"b.c",
+				Some(&format!("{}{}", numbered(0..6), code("f", 0..30))),
+			)],
+		);
+
+		let walk = walked(repo.path(), None);
+
+		assert_eq!(walk.deltas, deltas(&[(0, &[("C", 6)])]));
+		assert_eq!(walk.paths, lines(&[("b.c", &[("C", 6)])]));
+	}
+
+	#[test]
+	fn teammate_edits_untouched_file_cost_no_blame() {
+		let repo = FixtureRepo::new();
+		repo.commit(FRIEND, at(0), &[("f.c", Some(&code("f", 0..5)))]);
+		repo.commit(ME, at(0) + 1, &[("a.c", Some(&code("a", 0..3)))]);
+		repo.commit(FRIEND, at(1), &[("f.c", Some(&code("f", 0..9)))]);
+		repo.commit(FRIEND, at(2), &[("g.c", Some(&code("f", 0..4)))]);
+
+		let (walk, blamed) = walked_recording(repo.path());
+
+		assert_eq!(blamed, BTreeSet::from(["a.c".to_owned()]));
+		assert!(!walk.paths.contains_key("f.c"));
+		assert_eq!(walk.deltas, deltas(&[(0, &[("C", 3)])]));
+	}
+
+	#[test]
+	fn weeks_never_go_back_with_skewed_dates() {
+		let repo = FixtureRepo::new();
+		repo.commit(ME, at(2), &[("a.c", Some(&code("a", 0..3)))]);
+		repo.commit(ME, at(0), &[("b.c", Some(&code("b", 0..2)))]);
+		repo.commit(ME, at(3), &[("c.rs", Some(&code("c", 0..1)))]);
+		repo.commit(ME, at(1), &[("c.rs", None)]);
+		repo.commit(ME, at(4), &[("d.rs", Some(&code("d", 0..4)))]);
+
+		let walk = walked(repo.path(), None);
+
+		assert_eq!(
+			walk.deltas,
+			deltas(&[(2, &[("C", 5)]), (4, &[("Rust", 4)])])
+		);
+	}
+
+	#[test]
+	fn incremental_walk_from_mid_week_equals_full_walk() {
+		let repo = FixtureRepo::new();
+		repo.commit(ME, at(0), &[("a.c", Some(&code("a", 0..5)))]);
+		repo.commit(
+			ME,
+			at(0) + DAY_SECONDS,
 			&[
-				("a.c", Some(&lines(5000))),
-				("b.c", Some(&lines(5000))),
-				("c.c", Some(&lines(5001))),
+				("a.c", Some(&code("a", 0..8))),
+				("b.rs", Some(&code("b", 0..2))),
 			],
 		);
-
-		let (weeks, _) =
-			weekly_added(repo.path(), None, &authors(&["me@x"]), &shipped_detector()).unwrap();
-
-		assert_eq!(
-			weeks,
-			Weeks::from([(week(2026, 11, 23), bucket(&[("C", 10_000)]))])
-		);
-	}
-
-	const PATCH: &str = "From 0 Mon Sep 17 00:00:00 2001\nSubject: [PATCH] fix\n\n---\ndiff --git a/src/a.c b/src/a.c\nindex 1..2 100644\n--- a/src/a.c\n+++ b/src/a.c\n@@ -1,2 +1,4 @@\n int a;\n-int b;\n+int c;\n+int d;\n+int e;\ndiff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\t2026-01-01\n@@ -1 +1,2 @@\n+fn a() {}\n+fn b() {}\n fn c() {}\n";
-
-	fn patch_adding(target: &str, count: usize) -> String {
-		format!(
-			"--- a/{target}\n+++ b/{target}\n@@ -0,0 +1 @@\n{}",
-			"+x\n".repeat(count)
-		)
-	}
-
-	#[test]
-	fn patch_lines_count_for_the_patched_language() {
-		let repo = FixtureRepo::new();
-		repo.commit("me@x", WEEK_ONE_TS, &[("patches/fix.patch", Some(PATCH))]);
-		repo.commit("other@x", WEEK_ONE_TS + 1, &[("other.patch", Some(PATCH))]);
-		let grown = PATCH.replace("+int e;\n", "+int e;\n+int f;\n");
+		let first = walked(repo.path(), None);
+		repo.commit(ME, at(0) + 2 * DAY_SECONDS, &[("b.rs", None)]);
 		repo.commit(
-			"me@x",
-			WEEK_ONE_TS + WEEK_SECONDS,
-			&[
-				("patches/fix.patch", Some(&grown)),
-				("UP.PATCH", Some(&patch_adding("x.py", 2))),
-			],
+			FRIEND,
+			at(0) + 3 * DAY_SECONDS,
+			&[("f.c", Some(&code("f", 0..3)))],
 		);
-
-		let (weeks, _) =
-			weekly_added(repo.path(), None, &authors(&["me@x"]), &shipped_detector()).unwrap();
-
-		assert_eq!(
-			weeks,
-			Weeks::from([
-				(week(2026, 11, 23), bucket(&[("C", 3), ("Rust", 2)])),
-				(week(2026, 11, 30), bucket(&[("C", 1), ("Python", 2)])),
-			])
-		);
-	}
-
-	#[test]
-	fn vendored_deleted_and_huge_patches_count_nothing() {
-		let repo = FixtureRepo::new();
-		repo.commit(
-			"me@x",
-			WEEK_ONE_TS,
-			&[
-				(".gitattributes", Some("vendor/** linguist-vendored\n")),
-				("vendor/x.patch", Some(PATCH)),
-				("huge.patch", Some(&patch_adding("a.c", 5000))),
-				("gone.patch", Some(&patch_adding("/dev/null", 3))),
-			],
-		);
-		repo.commit("me@x", WEEK_ONE_TS + WEEK_SECONDS, &[("gone.patch", None)]);
-
-		let (weeks, _) =
-			weekly_added(repo.path(), None, &authors(&["me@x"]), &shipped_detector()).unwrap();
-
-		assert!(weeks.is_empty(), "{weeks:?}");
-	}
-
-	#[test]
-	fn quoted_and_spaced_patch_names_follow_their_attributes() {
-		let repo = FixtureRepo::new();
-		repo.commit(
-			"me@x",
-			WEEK_ONE_TS,
-			&[
-				(
-					".gitattributes",
-					Some("vendored*.patch linguist-vendored\n"),
-				),
-				("vendored a.patch", Some(PATCH)),
-				("vendored-\u{e9}t\u{e9}.patch", Some(PATCH)),
-				("my fix.patch", Some(&patch_adding("x.py", 2))),
-			],
-		);
-
-		let (weeks, _) =
-			weekly_added(repo.path(), None, &authors(&["me@x"]), &shipped_detector()).unwrap();
-
-		assert_eq!(
-			weeks,
-			Weeks::from([(week(2026, 11, 23), bucket(&[("Python", 2)]))])
-		);
-	}
-
-	#[test]
-	fn gitattributes_override_still_wins() {
-		let repo = FixtureRepo::new();
-		repo.commit(
-			"me@x",
-			WEEK_ONE_TS,
-			&[
-				(
-					".gitattributes",
-					Some("src/** linguist-language=Boo\n*.cfgx linguist-language=json\n*.txtx linguist-language=Text\n"),
-				),
-				("src/yasl_do", Some(&lines(4))),
-				("src/yasl_hw.c", Some(&lines(1))),
-				("a.cfgx", Some(&lines(2))),
-				("a.txtx", Some(&lines(5))),
-			],
-		);
-
-		let (weeks, _) =
-			weekly_added(repo.path(), None, &authors(&["me@x"]), &shipped_detector()).unwrap();
-
-		assert_eq!(
-			weeks,
-			Weeks::from([(week(2026, 11, 23), bucket(&[("Boo", 5), ("JSON", 2)]))])
-		);
-	}
-
-	#[test]
-	fn rename_counts_zero() {
-		let repo = FixtureRepo::new();
-		repo.commit("me@x", WEEK_ONE_TS, &[("a.rs", Some(&lines(10)))]);
-		repo.mv("a.rs", "dir/b.rs", WEEK_ONE_TS + WEEK_SECONDS);
-
-		let (weeks, _) = weekly_added(
-			repo.path(),
-			None,
-			&authors(&["committer@example.com"]),
-			&shipped_detector(),
-		)
-		.unwrap();
-
-		assert!(weeks.is_empty());
-	}
-
-	#[test]
-	fn rename_with_edit_counts_added_lines_under_new_path() {
-		let repo = FixtureRepo::new();
-		repo.commit("me@x", WEEK_ONE_TS, &[("a.rs", Some(&lines(10)))]);
-		repo.commit(
-			"me@x",
-			WEEK_ONE_TS + WEEK_SECONDS,
-			&[("a.rs", None), ("b.c", Some(&format!("{}y\n", lines(10))))],
-		);
-
-		let (weeks, _) =
-			weekly_added(repo.path(), None, &authors(&["me@x"]), &shipped_detector()).unwrap();
-
-		assert_eq!(
-			weeks,
-			Weeks::from([
-				(week(2026, 11, 23), bucket(&[("Rust", 10)])),
-				(week(2026, 11, 30), bucket(&[("C", 1)])),
-			])
-		);
-	}
-
-	#[test]
-	fn since_reads_only_new_commits() {
-		let repo = FixtureRepo::new();
-		repo.commit("me@x", WEEK_ONE_TS, &[("a.rs", Some(&lines(10)))]);
-		let first = repo.head();
-		repo.commit("me@x", WEEK_ONE_TS + 1, &[("b.rs", Some(&lines(7)))]);
+		repo.mv("a.c", "c.c", at(1));
+		repo.commit(ME, at(2), &[("c.c", Some(&code("a", 0..5)))]);
 		let bare = repo.bare_clone();
 
-		let (weeks, head) = weekly_added(
-			bare.path(),
-			Some(&first),
-			&authors(&["me@x"]),
-			&shipped_detector(),
-		)
-		.unwrap();
+		let second = walked(bare.path(), Some((&first.head, &first.paths)));
+		let full = walked(bare.path(), None);
 
-		assert_eq!(head, Some(repo.head()));
+		let mut combined = first.deltas;
+		add_deltas(&mut combined, &second.deltas);
+		assert_eq!(combined, full.deltas);
 		assert_eq!(
-			weeks,
-			Weeks::from([(week(2026, 11, 23), bucket(&[("Rust", 7)]))])
+			second,
+			Walk {
+				deltas: second.deltas.clone(),
+				..full.clone()
+			}
 		);
+		assert_eq!(full.deltas, deltas(&[(0, &[("C", 8)]), (2, &[("C", -3)])]));
+		assert_eq!(full.paths, lines(&[("c.c", &[("C", 5)])]));
+	}
+
+	#[test]
+	fn empty_commits_change_nothing() {
+		let repo = FixtureRepo::new();
+		repo.empty_commit(ME, at(0));
+		repo.commit(ME, at(0) + 1, &[("a.c", Some(&code("a", 0..2)))]);
+		repo.empty_commit(ME, at(0) + 2);
+		repo.empty_commit(FRIEND, at(1));
+		repo.commit(ME, at(1) + 1, &[("a.c", Some(&code("a", 0..3)))]);
+		repo.empty_commit(ME, at(2));
+
+		let walk = walked(repo.path(), None);
+
+		assert_eq!(walk.deltas, deltas(&[(0, &[("C", 2)]), (1, &[("C", 1)])]));
 	}
 
 	#[test]
 	fn since_head_gives_nothing() {
 		let repo = FixtureRepo::new();
-		repo.commit("me@x", WEEK_ONE_TS, &[("a.rs", Some(&lines(10)))]);
+		repo.commit(ME, at(0), &[("a.c", Some(&code("a", 0..2)))]);
+		let first = walked(repo.path(), None);
 
-		let (weeks, head) = weekly_added(
-			repo.path(),
-			Some(&repo.head()),
-			&authors(&["me@x"]),
-			&shipped_detector(),
-		)
-		.unwrap();
+		let again = walked(repo.path(), Some((&first.head, &first.paths)));
 
-		assert!(weeks.is_empty());
-		assert_eq!(head, Some(repo.head()));
+		assert!(again.deltas.is_empty());
+		assert_eq!(again.paths, first.paths);
+		assert_eq!(again.head, first.head);
 	}
 
 	#[test]
-	fn empty_repo_returns_none_head() {
+	fn vendored_and_unknown_files_never_blamed() {
+		let repo = FixtureRepo::new();
+		repo.commit(
+			ME,
+			at(0),
+			&[
+				(
+					".gitattributes",
+					Some(
+						"vendor/** linguist-vendored\n*.cfgx linguist-language=json\n*.txtx linguist-language=Text\n",
+					),
+				),
+				("vendor/v.c", Some(&code("v", 0..4))),
+				("notes.unknownext", Some(&code("n", 0..4))),
+				("logo.png", Some("\0\0\0png")),
+				("Cargo.lock", Some(&code("l", 0..4))),
+				("a.txtx", Some(&code("t", 0..4))),
+				("a.cfgx", Some(&code("j", 0..2))),
+				("huge.c", Some(&code("h", 0..5001))),
+				("a.c", Some(&code("a", 0..3))),
+			],
+		);
+		repo.commit(ME, at(1), &[("vendor/v.c", Some(&code("v", 0..9)))]);
+
+		let (walk, blamed) = walked_recording(repo.path());
+
+		assert_eq!(
+			blamed,
+			BTreeSet::from(["a.c".to_owned(), "a.cfgx".to_owned(), "huge.c".to_owned()])
+		);
+		assert_eq!(walk.deltas, deltas(&[(0, &[("C", 3), ("JSON", 2)])]));
+		assert_eq!(
+			walk.paths,
+			lines(&[("a.c", &[("C", 3)]), ("a.cfgx", &[("JSON", 2)])])
+		);
+	}
+
+	const PATCH: &str = "From 0 Mon Sep 17 00:00:00 2001\nSubject: [PATCH] fix\n\n---\ndiff --git a/src/a.c b/src/a.c\nindex 1..2 100644\n--- a/src/a.c\n+++ b/src/a.c\n@@ -1,2 +1,4 @@\n int a;\n-int b;\n+int c;\n+int d;\n+int e;\ndiff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\t2026-01-01\n@@ -1 +1,2 @@\n+fn a() {}\n+fn b() {}\n fn c() {}\n";
+
+	#[test]
+	fn patch_lines_count_for_the_patched_language() {
+		let repo = FixtureRepo::new();
+		repo.commit(
+			ME,
+			at(0),
+			&[
+				(
+					".gitattributes",
+					Some("vendor/** linguist-vendored\nforced.patch linguist-language=Python\n"),
+				),
+				("patches/fix.patch", Some(PATCH)),
+				("vendor/x.patch", Some(PATCH)),
+				("forced.patch", Some(&PATCH.replace("lib.rs", "lib.py"))),
+				(
+					"docs.patch",
+					Some(&PATCH.replace("lib.rs", "notes.unknownext")),
+				),
+			],
+		);
+		repo.commit(FRIEND, at(0) + 1, &[("other.patch", Some(PATCH))]);
+		repo.commit(ME, at(1), &[("forced.patch", None)]);
+
+		let walk = walked(repo.path(), None);
+
+		assert_eq!(
+			walk.deltas,
+			deltas(&[
+				(0, &[("C", 9), ("Python", 2), ("Rust", 2)]),
+				(1, &[("C", -3), ("Python", -2)]),
+			])
+		);
+		assert_eq!(
+			walk.paths,
+			lines(&[
+				("docs.patch", &[("C", 3)]),
+				("patches/fix.patch", &[("C", 3), ("Rust", 2)]),
+			])
+		);
+	}
+
+	#[test]
+	fn empty_repo_walks_to_none() {
 		let repo = FixtureRepo::new();
 		let bare = repo.bare_clone();
 		for path in [repo.path(), bare.path()] {
-			let (weeks, head) =
-				weekly_added(path, None, &authors(&["me@x"]), &shipped_detector()).unwrap();
-			assert!(weeks.is_empty());
-			assert_eq!(head, None);
+			assert_eq!(walk(path, None, &me(), &shipped_detector()).unwrap(), None);
 		}
-	}
-
-	#[test]
-	fn author_email_match_ignores_case() {
-		let repo = FixtureRepo::new();
-		repo.commit("Me@X.com", WEEK_ONE_TS, &[("a.rs", Some(&lines(2)))]);
-
-		let (weeks, _) = weekly_added(
-			repo.path(),
-			None,
-			&authors(&["mE@x.COM"]),
-			&shipped_detector(),
-		)
-		.unwrap();
-
-		assert_eq!(
-			weeks,
-			Weeks::from([(week(2026, 11, 23), bucket(&[("Rust", 2)]))])
-		);
-	}
-
-	#[test]
-	fn same_week_commits_accumulate() {
-		let repo = FixtureRepo::new();
-		repo.commit("me@x", WEEK_ONE_TS, &[("a.rs", Some(&lines(2)))]);
-		repo.commit("me@x", WEEK_ONE_TS + 60, &[("b.rs", Some(&lines(3)))]);
-
-		let (weeks, _) =
-			weekly_added(repo.path(), None, &authors(&["me@x"]), &shipped_detector()).unwrap();
-
-		assert_eq!(
-			weeks,
-			Weeks::from([(week(2026, 11, 23), bucket(&[("Rust", 5)]))])
-		);
-	}
-
-	#[test]
-	fn commit_without_file_changes_is_skipped() {
-		let repo = FixtureRepo::new();
-		repo.empty_commit("me@x", WEEK_ONE_TS);
-		repo.commit("me@x", WEEK_ONE_TS + 1, &[("a.rs", Some(&lines(2)))]);
-		repo.empty_commit("me@x", WEEK_ONE_TS + 2);
-
-		let (weeks, _) =
-			weekly_added(repo.path(), None, &authors(&["me@x"]), &shipped_detector()).unwrap();
-
-		assert_eq!(
-			weeks,
-			Weeks::from([(week(2026, 11, 23), bucket(&[("Rust", 2)]))])
-		);
 	}
 
 	#[test]
 	fn fails_outside_a_repository() {
 		let dir = tempfile::TempDir::new().unwrap();
-		assert!(weekly_added(dir.path(), None, &[], &shipped_detector()).is_err());
+		assert!(walk(dir.path(), None, &me(), &shipped_detector()).is_err());
 	}
 
 	#[test]
 	fn unknown_since_is_an_error() {
 		let repo = FixtureRepo::new();
-		repo.commit("me@x", WEEK_ONE_TS, &[("a.rs", Some(&lines(2)))]);
-		let message = weekly_added(repo.path(), Some("deadbeef"), &[], &shipped_detector())
-			.unwrap_err()
-			.to_string();
-		assert!(message.starts_with("git log in "), "{message}");
+		repo.commit(ME, at(0), &[("a.c", Some(&code("a", 0..2)))]);
+		let message = walk(
+			repo.path(),
+			Some(("deadbeef", &PathLines::new())),
+			&me(),
+			&shipped_detector(),
+		)
+		.unwrap_err()
+		.to_string();
+		assert!(message.starts_with("git rev-list in "), "{message}");
 	}
 
 	#[test]
-	fn truncated_output_yields_no_touches() {
-		let wanted = HashSet::from(["me@x".to_owned()]);
-		assert!(
-			parse_touches(&b"sha\0me@x"[..], &wanted)
-				.unwrap()
-				.is_empty()
+	fn add_deltas_drops_what_cancels_out() {
+		let mut target = deltas(&[(0, &[("C", 3), ("Rust", 1)]), (1, &[("C", 2)])]);
+		add_deltas(
+			&mut target,
+			&deltas(&[(0, &[("Rust", -1)]), (1, &[("C", -2)]), (2, &[("Nix", 4)])]),
 		);
-		assert!(
-			parse_touches(&b"sha\0me@x\x001\0\n"[..], &wanted)
-				.unwrap()
-				.is_empty()
-		);
-	}
-
-	#[test]
-	fn invalid_timestamp_skips_the_commit() {
-		let wanted = HashSet::from(["me@x".to_owned()]);
-		let output = b"sha\0me@x\0soon\0\n1\t0\ta.rs\0";
-		assert!(parse_touches(&output[..], &wanted).unwrap().is_empty());
-	}
-
-	struct BrokenPipe;
-
-	impl std::io::Read for BrokenPipe {
-		fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
-			Err(std::io::Error::other("broken pipe"))
-		}
-	}
-
-	#[test]
-	fn patch_lines_without_commit_or_target_count_nothing() {
-		let wanted = HashSet::from(["me@x".to_owned()]);
-		let orphan = b"+++ a.patch\n@@ -0,0 +1 @@\n++++ b/a.c\n++x\n";
-		let headerless = b"\0me@x\n+++ a.patch\n@@ -0,0 +1 @@\n++++ b/a.c\n++x\n";
-		let targetless = b"\0me@x\x00100\n+++ a.patch\n@@ -0,0 +1 @@\n++x\n";
-		for output in [&orphan[..], &headerless[..], &targetless[..]] {
-			assert!(parse_patch_touches(output, &wanted).unwrap().is_empty());
-		}
-		let counted =
-			b"\0me@x\x00100\r\n+++ a.patch\n@@ -0,0 +1 @@\n+--- a/a.c\n++++ b/a.c\r\n++x\r\n\\ No newline\n";
-		let touches = parse_patch_touches(&counted[..], &wanted).unwrap();
-		assert_eq!(touches.len(), 1);
-		assert_eq!(touches[0].patched.as_deref(), Some("b/a.c"));
-	}
-
-	#[test]
-	fn inner_added_line_starting_with_plus_plus_keeps_its_target() {
-		let wanted = HashSet::from(["me@x".to_owned()]);
-		let output = b"\0me@x\x00100\n+++ a.patch\n@@ -0,0 +1 @@\n+--- a/a.c\n++++ b/a.c\n++++ x\n+ y\n++z\n";
-		let touches = parse_patch_touches(&output[..], &wanted).unwrap();
-		assert_eq!(touches.len(), 1);
-		assert_eq!(touches[0].patched.as_deref(), Some("b/a.c"));
-		assert_eq!(touches[0].added, 2);
-	}
-
-	#[test]
-	fn patch_read_error_is_an_error_not_a_partial_count() {
-		let wanted = HashSet::from(["me@x".to_owned()]);
-		let valid = &b"\0me@x\x00100\n+++ a.patch\n@@ -0,0 +1 @@\n++++ b/a.c\n"[..];
-		let reader = BufReader::new(std::io::Read::chain(valid, BrokenPipe));
-
-		let error = parse_patch_touches(reader, &wanted).unwrap_err();
-
-		assert_eq!(error.to_string(), "reading git log output: broken pipe");
-	}
-
-	#[test]
-	fn read_error_mid_stream_is_an_error_not_a_partial_count() {
-		let wanted = HashSet::from(["me@x".to_owned()]);
-		let valid = &b"sha\0me@x\x00100\0\n1\t0\ta.rs\0"[..];
-		let reader = BufReader::new(std::io::Read::chain(valid, BrokenPipe));
-
-		let error = parse_touches(reader, &wanted).unwrap_err();
-
-		assert_eq!(error.to_string(), "reading git log output: broken pipe");
+		assert_eq!(target, deltas(&[(0, &[("C", 3)]), (2, &[("Nix", 4)])]));
 	}
 }

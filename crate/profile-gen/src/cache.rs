@@ -8,12 +8,11 @@ use crate::attributes::attributes_blob;
 use crate::config::LanguageLists;
 use crate::error::Result;
 use crate::git;
-use crate::history::{Week, Weeks, weekly_added};
+use crate::history::{Deltas, PathLines, Week, add_deltas, walk};
 use crate::language::{Detector, LINGUIST_DATA, language_by_name};
+use crate::ownership::BLAME_OPTIONS;
 
 const RULES_VERSION: u32 = 3;
-
-type LanguageLines = BTreeMap<&'static str, u64>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cache {
@@ -25,16 +24,18 @@ pub struct Cache {
 pub struct RepoCache {
 	pub last_sha: String,
 	pub attributes_blob: Option<String>,
-	#[serde(with = "weeks_format")]
-	pub weeks: Weeks,
+	#[serde(with = "path_lines_format")]
+	pub paths: PathLines,
+	#[serde(with = "deltas_format")]
+	pub deltas: Deltas,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
-	#[serde(with = "weeks_format")]
-	pub weeks: Weeks,
-	#[serde(with = "first_use_format")]
-	pub first_use: BTreeMap<&'static str, Vec<Week>>,
+	#[serde(with = "deltas_format")]
+	pub lines: Deltas,
+	#[serde(with = "deltas_format")]
+	pub repos: Deltas,
 }
 
 #[derive(Deserialize)]
@@ -53,80 +54,66 @@ impl Cache {
 
 impl Usage {
 	#[must_use]
-	pub fn merge(mut self, other: Self) -> Self {
-		add_weeks(&mut self.weeks, &other.weeks);
-		for (language, mut list) in other.first_use {
-			let merged = self.first_use.entry(language).or_default();
-			merged.append(&mut list);
-			merged.sort_unstable();
-		}
+	pub fn merge(mut self, other: &Self) -> Self {
+		add_deltas(&mut self.lines, &other.lines);
+		add_deltas(&mut self.repos, &other.repos);
 		self
 	}
 }
 
-mod weeks_format {
-	use super::{
-		BTreeMap, Deserialize, Deserializer, LanguageLines, Serializer, Weeks, parse_language,
-		parse_week,
-	};
+mod deltas_format {
+	use super::{Deltas, Deserialize, Deserializer, Serializer, by_language, parse_week};
+	use std::collections::BTreeMap;
 
 	pub(super) fn serialize<S: Serializer>(
-		weeks: &Weeks,
+		deltas: &Deltas,
 		serializer: S,
 	) -> std::result::Result<S::Ok, S::Error> {
-		serializer.collect_map(weeks.iter().map(|(week, lines)| (week.to_string(), lines)))
+		serializer.collect_map(
+			deltas
+				.iter()
+				.map(|(week, bucket)| (week.to_string(), bucket)),
+		)
 	}
 
 	pub(super) fn deserialize<'de, D: Deserializer<'de>>(
 		deserializer: D,
-	) -> std::result::Result<Weeks, D::Error> {
-		BTreeMap::<String, BTreeMap<String, u64>>::deserialize(deserializer)?
+	) -> std::result::Result<Deltas, D::Error> {
+		BTreeMap::<String, BTreeMap<String, i64>>::deserialize(deserializer)?
 			.into_iter()
-			.map(|(week, lines)| Ok((parse_week(&week)?, parse_lines(lines)?)))
-			.collect()
-	}
-
-	fn parse_lines<E: serde::de::Error>(
-		lines: BTreeMap<String, u64>,
-	) -> std::result::Result<LanguageLines, E> {
-		lines
-			.into_iter()
-			.map(|(name, count)| Ok((parse_language(&name)?, count)))
+			.map(|(week, bucket)| Ok((parse_week(&week)?, by_language(bucket)?)))
 			.collect()
 	}
 }
 
-mod first_use_format {
-	use super::{
-		BTreeMap, Deserialize, Deserializer, Serializer, Week, parse_language, parse_week,
-	};
+mod path_lines_format {
+	use super::{Deserialize, Deserializer, PathLines, Serializer, by_language};
+	use std::collections::BTreeMap;
 
 	pub(super) fn serialize<S: Serializer>(
-		first_use: &BTreeMap<&'static str, Vec<Week>>,
+		paths: &PathLines,
 		serializer: S,
 	) -> std::result::Result<S::Ok, S::Error> {
-		serializer.collect_map(first_use.iter().map(|(language, list)| {
-			(
-				language,
-				list.iter().map(ToString::to_string).collect::<Vec<_>>(),
-			)
-		}))
+		serializer.collect_map(paths)
 	}
 
 	pub(super) fn deserialize<'de, D: Deserializer<'de>>(
 		deserializer: D,
-	) -> std::result::Result<BTreeMap<&'static str, Vec<Week>>, D::Error> {
-		BTreeMap::<String, Vec<String>>::deserialize(deserializer)?
+	) -> std::result::Result<PathLines, D::Error> {
+		BTreeMap::<String, BTreeMap<String, u64>>::deserialize(deserializer)?
 			.into_iter()
-			.map(|(name, list)| {
-				let weeks = list
-					.iter()
-					.map(|week| parse_week(week))
-					.collect::<std::result::Result<_, _>>()?;
-				Ok((parse_language(&name)?, weeks))
-			})
+			.map(|(path, bucket)| Ok((path, by_language(bucket)?)))
 			.collect()
 	}
+}
+
+fn by_language<E: serde::de::Error, V>(
+	bucket: BTreeMap<String, V>,
+) -> std::result::Result<BTreeMap<&'static str, V>, E> {
+	bucket
+		.into_iter()
+		.map(|(name, value)| Ok((parse_language(&name)?, value)))
+		.collect()
 }
 
 fn parse_week<E: serde::de::Error>(text: &str) -> std::result::Result<Week, E> {
@@ -146,11 +133,19 @@ pub fn rules_hash(
 	contributed: &[String],
 	lists: &LanguageLists,
 ) -> String {
-	hash_rules(LINGUIST_DATA, authors, exclude_repos, contributed, lists)
+	hash_rules(
+		LINGUIST_DATA,
+		&BLAME_OPTIONS,
+		authors,
+		exclude_repos,
+		contributed,
+		lists,
+	)
 }
 
 fn hash_rules(
 	linguist_data: &str,
+	blame_options: &[&str],
 	authors: &[String],
 	exclude_repos: &[String],
 	contributed: &[String],
@@ -159,6 +154,7 @@ fn hash_rules(
 	let mut bytes = Vec::new();
 	bytes.extend(RULES_VERSION.to_le_bytes());
 	push_text(&mut bytes, linguist_data);
+	push_text(&mut bytes, &blame_options.join(" "));
 	let ambiguous: Vec<String> = lists
 		.ambiguous
 		.iter()
@@ -185,20 +181,16 @@ fn push_text(bytes: &mut Vec<u8>, text: &str) {
 	bytes.extend(text.as_bytes());
 }
 
-fn add_weeks(target: &mut Weeks, source: &Weeks) {
-	for (week, lines) in source {
-		let bucket = target.entry(*week).or_default();
-		for (language, count) in lines {
-			*bucket.entry(language).or_default() += count;
-		}
-	}
-}
-
-fn is_ancestor_of_head(repo: &Path, sha: &str) -> bool {
+fn is_on_first_parent_chain(repo: &Path, sha: &str) -> bool {
 	git::command(repo)
-		.args(["merge-base", "--is-ancestor", sha, "HEAD"])
+		.args(["rev-list", "--first-parent", "HEAD"])
 		.output()
-		.is_ok_and(|output| output.status.success())
+		.is_ok_and(|output| {
+			output.status.success()
+				&& String::from_utf8_lossy(&output.stdout)
+					.lines()
+					.any(|listed| listed == sha)
+		})
 }
 
 pub fn update(
@@ -212,23 +204,26 @@ pub fn update(
 	let reusable = match cache.repos.remove(name) {
 		Some(previous)
 			if previous.attributes_blob == blob
-				&& is_ancestor_of_head(repo, &previous.last_sha) =>
+				&& is_on_first_parent_chain(repo, &previous.last_sha) =>
 		{
 			Some(previous)
 		}
 		_ => None,
 	};
-	let since = reusable.as_ref().map(|previous| previous.last_sha.as_str());
-	let (added, head) = weekly_added(repo, since, authors, detector)?;
-	let mut weeks = reusable.map_or_default(|previous| previous.weeks);
-	add_weeks(&mut weeks, &added);
-	if let Some(last_sha) = head {
+	let since = reusable
+		.as_ref()
+		.map(|previous| (previous.last_sha.as_str(), &previous.paths));
+	let walked = walk(repo, since, authors, detector)?;
+	if let Some(walked) = walked {
+		let mut deltas = reusable.map_or_default(|previous| previous.deltas);
+		add_deltas(&mut deltas, &walked.deltas);
 		cache.repos.insert(
 			name.to_owned(),
 			RepoCache {
-				last_sha,
+				last_sha: walked.head,
 				attributes_blob: blob,
-				weeks,
+				paths: walked.paths,
+				deltas,
 			},
 		);
 	}
@@ -267,20 +262,33 @@ pub fn save(cache: &Cache, path: &Path) -> Result<()> {
 pub fn usage(cache: &Cache) -> Usage {
 	let mut usage = Usage::default();
 	for repo in cache.repos.values() {
-		add_weeks(&mut usage.weeks, &repo.weeks);
-		let mut seen = BTreeSet::new();
-		for (week, lines) in &repo.weeks {
-			for (language, count) in lines {
-				if *count > 0 && seen.insert(*language) {
-					usage.first_use.entry(language).or_default().push(*week);
-				}
-			}
-		}
-	}
-	for list in usage.first_use.values_mut() {
-		list.sort_unstable();
+		add_deltas(&mut usage.lines, &repo.deltas);
+		add_deltas(&mut usage.repos, &presence_changes(&repo.deltas));
 	}
 	usage
+}
+
+fn presence_changes(deltas: &Deltas) -> Deltas {
+	let mut level: BTreeMap<&'static str, i64> = BTreeMap::new();
+	deltas
+		.iter()
+		.map(|(week, bucket)| {
+			let changes = bucket
+				.iter()
+				.filter_map(|(language, delta)| {
+					let before = level.get(language).copied().unwrap_or(0);
+					let after = before + delta;
+					level.insert(language, after);
+					match (before > 0, after > 0) {
+						(false, true) => Some((*language, 1)),
+						(true, false) => Some((*language, -1)),
+						_ => None,
+					}
+				})
+				.collect();
+			(*week, changes)
+		})
+		.collect()
 }
 
 #[cfg(test)]
@@ -294,8 +302,11 @@ mod tests {
 	const WEEK_SECONDS: i64 = 7 * 24 * 3600;
 	const ME: &str = "me@x";
 
-	fn lines(count: usize) -> String {
-		"x\n".repeat(count)
+	fn code(tag: &str, count: usize) -> String {
+		(0..count)
+			.map(|index| format!("int {tag}_value_{index}_alpha = compute_value({index}, 2, 3);\n"))
+			.collect::<Vec<_>>()
+			.concat()
 	}
 
 	fn me() -> Vec<String> {
@@ -306,14 +317,23 @@ mod tests {
 		Date::constant(2026, 11, 23).saturating_add(jiff::Span::new().weeks(offset))
 	}
 
-	fn bucket(entries: &[(&'static str, u64)]) -> BTreeMap<&'static str, u64> {
-		entries.iter().copied().collect()
+	fn deltas(entries: &[(i64, &[(&'static str, i64)])]) -> Deltas {
+		entries
+			.iter()
+			.map(|(offset, bucket)| (week(*offset), bucket.iter().copied().collect()))
+			.collect()
 	}
 
-	fn fresh_weeks(repo: &FixtureRepo) -> Weeks {
-		weekly_added(repo.path(), None, &me(), &shipped_detector())
+	fn fresh(repo: &FixtureRepo) -> RepoCache {
+		let walked = walk(repo.path(), None, &me(), &shipped_detector())
 			.unwrap()
-			.0
+			.unwrap();
+		RepoCache {
+			last_sha: walked.head,
+			attributes_blob: attributes_blob(repo.path()).unwrap(),
+			paths: walked.paths,
+			deltas: walked.deltas,
+		}
 	}
 
 	fn cached(repo: &FixtureRepo) -> Cache {
@@ -325,24 +345,31 @@ mod tests {
 	#[test]
 	fn update_appends_only_new_commits() {
 		let repo = FixtureRepo::new();
-		repo.commit(ME, WEEK_ONE_TS, &[("a.rs", Some(&lines(10)))]);
+		repo.commit(ME, WEEK_ONE_TS, &[("a.rs", Some(&code("a", 10)))]);
 		let mut cache = cached(&repo);
 		let first = repo.head();
 		assert_eq!(cache.repos["r"].last_sha, first);
 
-		repo.commit(ME, WEEK_ONE_TS + WEEK_SECONDS, &[("b.rs", Some(&lines(3)))]);
-		repo.commit(ME, WEEK_ONE_TS + 1, &[("c.c", Some(&lines(2)))]);
+		repo.commit(
+			ME,
+			WEEK_ONE_TS + WEEK_SECONDS,
+			&[("b.rs", Some(&code("b", 3)))],
+		);
+		repo.commit(ME, WEEK_ONE_TS + 1, &[("a.rs", Some(&code("a", 4)))]);
 		update(&mut cache, "r", repo.path(), &me(), &shipped_detector()).unwrap();
 
-		assert_eq!(cache.repos["r"].weeks, fresh_weeks(&repo));
-		assert_eq!(cache.repos["r"].last_sha, repo.head());
+		assert_eq!(cache.repos["r"], fresh(&repo));
+		assert_eq!(
+			cache.repos["r"].deltas,
+			deltas(&[(0, &[("Rust", 10)]), (1, &[("Rust", -3)])])
+		);
 		assert_ne!(cache.repos["r"].last_sha, first);
 	}
 
 	#[test]
-	fn update_without_new_commits_keeps_weeks() {
+	fn update_without_new_commits_keeps_the_repo() {
 		let repo = FixtureRepo::new();
-		repo.commit(ME, WEEK_ONE_TS, &[("a.rs", Some(&lines(10)))]);
+		repo.commit(ME, WEEK_ONE_TS, &[("a.rs", Some(&code("a", 10)))]);
 		let mut cache = cached(&repo);
 		let before = cache.clone();
 
@@ -354,43 +381,65 @@ mod tests {
 	#[test]
 	fn rewritten_history_recomputes() {
 		let repo = FixtureRepo::new();
-		repo.commit(ME, WEEK_ONE_TS, &[("a.rs", Some(&lines(10)))]);
-		repo.commit(ME, WEEK_ONE_TS + 1, &[("b.rs", Some(&lines(5)))]);
+		repo.commit(ME, WEEK_ONE_TS, &[("a.rs", Some(&code("a", 10)))]);
+		repo.commit(ME, WEEK_ONE_TS + 1, &[("b.rs", Some(&code("b", 5)))]);
 		let mut cache = cached(&repo);
 
-		repo.amend(ME, WEEK_ONE_TS + 2, &[("b.rs", &lines(8))]);
+		repo.amend(ME, WEEK_ONE_TS + 2, &[("b.rs", &code("b", 8))]);
 		update(&mut cache, "r", repo.path(), &me(), &shipped_detector()).unwrap();
 
-		assert_eq!(cache.repos["r"].weeks, fresh_weeks(&repo));
-		assert_eq!(
-			cache.repos["r"].weeks,
-			Weeks::from([(week(0), bucket(&[("Rust", 18)]))])
+		assert_eq!(cache.repos["r"], fresh(&repo));
+		assert_eq!(cache.repos["r"].deltas, deltas(&[(0, &[("Rust", 18)])]));
+	}
+
+	#[test]
+	fn incremental_after_fast_forward_onto_a_merge_of_main_equals_full_walk() {
+		let repo = FixtureRepo::new();
+		repo.commit(ME, WEEK_ONE_TS, &[("a.c", Some(&code("a", 4)))]);
+		repo.branch("feature");
+		repo.switch("main");
+		repo.commit(ME, WEEK_ONE_TS + 1, &[("b.c", Some(&code("b", 3)))]);
+		let mut cache = cached(&repo);
+		repo.switch("feature");
+		repo.commit(
+			ME,
+			WEEK_ONE_TS + WEEK_SECONDS,
+			&[("c.rs", Some(&code("c", 2)))],
 		);
-		assert_eq!(cache.repos["r"].last_sha, repo.head());
+		repo.merge(ME, WEEK_ONE_TS + WEEK_SECONDS + 1, "main", &[]);
+		repo.switch("main");
+		repo.fast_forward("feature");
+
+		update(&mut cache, "r", repo.path(), &me(), &shipped_detector()).unwrap();
+
+		assert_eq!(cache.repos["r"], fresh(&repo));
+		assert_eq!(
+			cache.repos["r"].deltas,
+			deltas(&[(0, &[("C", 4)]), (1, &[("C", 3), ("Rust", 2)])])
+		);
 	}
 
 	#[test]
 	fn unknown_last_sha_recomputes() {
 		let repo = FixtureRepo::new();
-		repo.commit(ME, WEEK_ONE_TS, &[("a.rs", Some(&lines(10)))]);
+		repo.commit(ME, WEEK_ONE_TS, &[("a.rs", Some(&code("a", 10)))]);
 		let mut cache = cached(&repo);
 		cache.repos.get_mut("r").unwrap().last_sha = "0".repeat(40);
 
 		update(&mut cache, "r", repo.path(), &me(), &shipped_detector()).unwrap();
 
-		assert_eq!(cache.repos["r"].weeks, fresh_weeks(&repo));
-		assert_eq!(cache.repos["r"].last_sha, repo.head());
+		assert_eq!(cache.repos["r"], fresh(&repo));
 	}
 
 	#[test]
 	fn attributes_change_recomputes() {
 		let repo = FixtureRepo::new();
-		repo.commit(ME, WEEK_ONE_TS, &[("libft/a.c", Some(&lines(10)))]);
-		repo.commit(ME, WEEK_ONE_TS + 1, &[("b.rs", Some(&lines(1)))]);
+		repo.commit(ME, WEEK_ONE_TS, &[("libft/a.c", Some(&code("a", 10)))]);
+		repo.commit(ME, WEEK_ONE_TS + 1, &[("b.rs", Some(&code("b", 1)))]);
 		let mut cache = cached(&repo);
 		assert_eq!(
-			cache.repos["r"].weeks[&week(0)],
-			bucket(&[("C", 10), ("Rust", 1)])
+			cache.repos["r"].deltas,
+			deltas(&[(0, &[("C", 10), ("Rust", 1)])])
 		);
 
 		repo.commit(
@@ -400,8 +449,8 @@ mod tests {
 		);
 		update(&mut cache, "r", repo.path(), &me(), &shipped_detector()).unwrap();
 
-		assert_eq!(cache.repos["r"].weeks[&week(0)], bucket(&[("Rust", 1)]));
-		assert_eq!(cache.repos["r"].weeks, fresh_weeks(&repo));
+		assert_eq!(cache.repos["r"].deltas, deltas(&[(0, &[("Rust", 1)])]));
+		assert_eq!(cache.repos["r"], fresh(&repo));
 		assert!(cache.repos["r"].attributes_blob.is_some());
 	}
 
@@ -413,8 +462,7 @@ mod tests {
 			"r".to_owned(),
 			RepoCache {
 				last_sha: "abc".to_owned(),
-				attributes_blob: None,
-				weeks: Weeks::new(),
+				..RepoCache::default()
 			},
 		);
 
@@ -452,16 +500,23 @@ mod tests {
 	}
 
 	#[test]
-	fn rules_hash_changes_with_linguist_data_or_lists() {
+	fn rules_hash_changes_with_linguist_data_blame_options_or_lists() {
 		let names =
 			|list: &[&str]| -> Vec<String> { list.iter().map(|name| (*name).to_owned()).collect() };
 		let ambiguous = |name: &str| BTreeMap::from([(".h".to_owned(), name.to_owned())]);
 		let base = rules_hash(&me(), &[], &[], &no_lists());
 		assert_eq!(
 			base,
-			hash_rules(LINGUIST_DATA, &me(), &[], &[], &no_lists())
+			hash_rules(LINGUIST_DATA, &BLAME_OPTIONS, &me(), &[], &[], &no_lists())
 		);
-		assert_ne!(base, hash_rules("{}", &me(), &[], &[], &no_lists()));
+		assert_ne!(
+			base,
+			hash_rules("{}", &BLAME_OPTIONS, &me(), &[], &[], &no_lists())
+		);
+		assert_ne!(
+			base,
+			hash_rules(LINGUIST_DATA, &["-w"], &me(), &[], &[], &no_lists())
+		);
 		let variants = [
 			LanguageLists {
 				include: names(&["JSON"]),
@@ -533,10 +588,26 @@ mod tests {
 	}
 
 	#[test]
+	fn different_blame_options_give_a_different_hash() {
+		let dir = tempfile::TempDir::new().unwrap();
+		let path = dir.path().join("cache.json");
+		let added_lines_hash = hash_rules(LINGUIST_DATA, &[], &me(), &[], &[], &no_lists());
+		let old_format = format!(
+			r#"{{"rules_hash":"{added_lines_hash}","repos":{{"r":{{"last_sha":"a","attributes_blob":null,"weeks":{{"2026-11-23":{{"Rust":1}}}}}}}}}}"#
+		);
+		std::fs::write(&path, old_format).unwrap();
+		let current = rules_hash(&me(), &[], &[], &no_lists());
+
+		assert_ne!(current, added_lines_hash);
+		assert_eq!(load(&path, &current).unwrap(), Cache::empty(&current));
+		assert!(load(&path, &added_lines_hash).is_err());
+	}
+
+	#[test]
 	fn load_resets_stale_file_with_unknown_language() {
 		let dir = tempfile::TempDir::new().unwrap();
 		let path = dir.path().join("cache.json");
-		let stale = r#"{"rules_hash":"old","repos":{"r":{"last_sha":"a","attributes_blob":null,"weeks":{"2026-11-23":{"Removed":1}}}}}"#;
+		let stale = r#"{"rules_hash":"old","repos":{"r":{"last_sha":"a","attributes_blob":null,"paths":{},"deltas":{"2026-11-23":{"Removed":1}}}}}"#;
 		std::fs::write(&path, stale).unwrap();
 
 		assert_eq!(load(&path, "new").unwrap(), Cache::empty("new"));
@@ -558,8 +629,10 @@ mod tests {
 		let path = dir.path().join("cache.json");
 		let bad_documents = [
 			"not json",
-			r#"{"rules_hash":"h","repos":{"r":{"last_sha":"a","attributes_blob":null,"weeks":{"2026-11-23":{"Nope":1}}}}}"#,
-			r#"{"rules_hash":"h","repos":{"r":{"last_sha":"a","attributes_blob":null,"weeks":{"not-a-date":{"Rust":1}}}}}"#,
+			r#"{"rules_hash":"h","repos":{"r":{"last_sha":"a","attributes_blob":null,"paths":{},"deltas":{"2026-11-23":{"Nope":1}}}}}"#,
+			r#"{"rules_hash":"h","repos":{"r":{"last_sha":"a","attributes_blob":null,"paths":{},"deltas":{"not-a-date":{"Rust":1}}}}}"#,
+			r#"{"rules_hash":"h","repos":{"r":{"last_sha":"a","attributes_blob":null,"paths":{"a.rs":{"Nope":1}},"deltas":{}}}}"#,
+			r#"{"rules_hash":"h","repos":{"r":{"last_sha":"a","attributes_blob":null,"paths":{"a.rs":{"Rust":-1}},"deltas":{}}}}"#,
 		];
 		for document in bad_documents {
 			std::fs::write(&path, document).unwrap();
@@ -570,7 +643,7 @@ mod tests {
 	#[test]
 	fn save_is_deterministic_and_leaves_no_temp_file() {
 		let repo = FixtureRepo::new();
-		repo.commit(ME, WEEK_ONE_TS, &[("a.rs", Some(&lines(10)))]);
+		repo.commit(ME, WEEK_ONE_TS, &[("a.rs", Some(&code("a", 10)))]);
 		let cache = cached(&repo);
 		let dir = tempfile::TempDir::new().unwrap();
 		let first = dir.path().join("a.json");
@@ -611,30 +684,55 @@ mod tests {
 	#[test]
 	fn roundtrip_json() {
 		let repo = FixtureRepo::new();
-		repo.commit(ME, WEEK_ONE_TS, &[("a.rs", Some(&lines(10)))]);
-		repo.commit(ME, WEEK_ONE_TS + WEEK_SECONDS, &[("b.c", Some(&lines(2)))]);
+		repo.commit(ME, WEEK_ONE_TS, &[("a.rs", Some(&code("a", 10)))]);
+		repo.commit(
+			ME,
+			WEEK_ONE_TS + WEEK_SECONDS,
+			&[("b.c", Some(&code("b", 2)))],
+		);
 		let cache = cached(&repo);
 
 		let json = serde_json::to_string(&cache).unwrap();
-		assert!(json.contains("\"2026-11-23\""));
-		assert!(json.contains("\"Rust\""));
+		assert!(
+			json.contains(r#""paths":{"a.rs":{"Rust":10},"b.c":{"C":2}}"#),
+			"{json}"
+		);
+		assert!(
+			json.contains(r#""deltas":{"2026-11-23":{"Rust":10},"2026-11-30":{"C":2}}"#),
+			"{json}"
+		);
 		assert_eq!(serde_json::from_str::<Cache>(&json).unwrap(), cache);
 
 		let usage = usage(&cache);
 		let json = serde_json::to_string(&usage).unwrap();
+		assert_eq!(
+			json,
+			r#"{"lines":{"2026-11-23":{"Rust":10},"2026-11-30":{"C":2}},"repos":{"2026-11-23":{"Rust":1},"2026-11-30":{"C":1}}}"#
+		);
 		assert_eq!(serde_json::from_str::<Usage>(&json).unwrap(), usage);
 	}
 
 	#[test]
-	fn weeks_of_the_wrong_shape_are_rejected() {
-		assert!(serde_json::from_str::<Usage>(r#"{"weeks":5,"first_use":{}}"#).is_err());
-		assert!(serde_json::from_str::<Usage>(r#"{"weeks":{},"first_use":5}"#).is_err());
+	fn usage_of_the_wrong_shape_is_rejected() {
+		let rejected = [
+			r#"{"lines":5,"repos":{}}"#,
+			r#"{"lines":{},"repos":5}"#,
+			r#"{"lines":{},"repos":{"2026-11-23":{"Nope":1}}}"#,
+			r#"{"lines":{},"repos":{"2026-13-40":{"Rust":1}}}"#,
+			r#"{"weeks":{},"first_use":{}}"#,
+		];
+		for document in rejected {
+			assert!(
+				serde_json::from_str::<Usage>(document).is_err(),
+				"{document}"
+			);
+		}
 	}
 
 	#[test]
 	fn update_fails_on_corrupt_history() {
 		let repo = FixtureRepo::new();
-		repo.commit(ME, WEEK_ONE_TS, &[("a.rs", Some(&lines(10)))]);
+		repo.commit(ME, WEEK_ONE_TS, &[("a.rs", Some(&code("a", 10)))]);
 		let blob = git::command(repo.path())
 			.args(["hash-object", "a.rs"])
 			.output()
@@ -648,71 +746,71 @@ mod tests {
 		assert!(update(&mut cache, "r", repo.path(), &me(), &shipped_detector()).is_err());
 	}
 
-	#[test]
-	fn usage_rejects_malformed_first_use() {
-		let unknown_language = r#"{"weeks":{},"first_use":{"Nope":["2026-11-23"]}}"#;
-		let bad_week = r#"{"weeks":{},"first_use":{"Rust":["2026-13-40"]}}"#;
-		assert!(serde_json::from_str::<Usage>(unknown_language).is_err());
-		assert!(serde_json::from_str::<Usage>(bad_week).is_err());
-	}
-
-	fn repo_cache(entries: &[(Week, &[(&'static str, u64)])]) -> RepoCache {
+	fn repo_cache(entries: &[(i64, &[(&'static str, i64)])]) -> RepoCache {
 		RepoCache {
-			last_sha: String::new(),
-			attributes_blob: None,
-			weeks: entries
-				.iter()
-				.map(|(week, list)| (*week, bucket(list)))
-				.collect(),
+			deltas: deltas(entries),
+			..RepoCache::default()
 		}
 	}
 
-	fn two_repo_cache() -> Cache {
+	#[test]
+	fn usage_repo_count_rises_and_falls_with_level() {
 		let mut cache = Cache::empty("h");
 		cache.repos.insert(
 			"one".to_owned(),
 			repo_cache(&[
-				(week(0), &[("Rust", 5)]),
-				(week(1), &[("C", 4), ("Rust", 1)]),
+				(0, &[("Rust", 5)]),
+				(1, &[("C", 3), ("Rust", -5)]),
+				(2, &[("Rust", 2)]),
+				(4, &[("Rust", 1), ("C", -1)]),
 			]),
 		);
-		cache.repos.insert(
-			"two".to_owned(),
-			repo_cache(&[(week(2), &[("Rust", 7), ("Nix", 0)])]),
-		);
 		cache
-	}
+			.repos
+			.insert("two".to_owned(), repo_cache(&[(3, &[("Rust", 4)])]));
 
-	#[test]
-	fn usage_sums_weeks_and_lists_first_use_per_repo() {
-		let usage = usage(&two_repo_cache());
+		let usage = usage(&cache);
 
-		assert_eq!(usage.first_use["Rust"], [week(0), week(2)]);
-		assert_eq!(usage.first_use["C"], [week(1)]);
-		assert!(!usage.first_use.contains_key("Nix"));
 		assert_eq!(
-			usage.weeks,
-			Weeks::from([
-				(week(0), bucket(&[("Rust", 5)])),
-				(week(1), bucket(&[("C", 4), ("Rust", 1)])),
-				(week(2), bucket(&[("Nix", 0), ("Rust", 7)])),
+			usage.lines,
+			deltas(&[
+				(0, &[("Rust", 5)]),
+				(1, &[("C", 3), ("Rust", -5)]),
+				(2, &[("Rust", 2)]),
+				(3, &[("Rust", 4)]),
+				(4, &[("C", -1), ("Rust", 1)]),
+			])
+		);
+		assert_eq!(
+			usage.repos,
+			deltas(&[
+				(0, &[("Rust", 1)]),
+				(1, &[("C", 1), ("Rust", -1)]),
+				(2, &[("Rust", 1)]),
+				(3, &[("Rust", 1)]),
 			])
 		);
 	}
 
 	#[test]
-	fn usage_merge_concatenates_sorted() {
-		let left = usage(&two_repo_cache());
-		let mut other = Cache::empty("h");
-		other
-			.repos
-			.insert("three".to_owned(), repo_cache(&[(week(1), &[("Rust", 2)])]));
-		let right = usage(&other);
+	fn merge_adds_lines_and_repos() {
+		let left = Usage {
+			lines: deltas(&[(0, &[("Rust", 5)]), (1, &[("C", 4)])]),
+			repos: deltas(&[(0, &[("Rust", 1)]), (1, &[("C", 1)])]),
+		};
+		let right = Usage {
+			lines: deltas(&[(1, &[("C", -4), ("Rust", 2)])]),
+			repos: deltas(&[(1, &[("C", -1), ("Rust", 1)])]),
+		};
 
-		let merged = left.merge(right);
+		let merged = left.merge(&right);
 
-		assert_eq!(merged.first_use["Rust"], [week(0), week(1), week(2)]);
-		assert_eq!(merged.first_use["C"], [week(1)]);
-		assert_eq!(merged.weeks[&week(1)], bucket(&[("C", 4), ("Rust", 3)]));
+		assert_eq!(
+			merged,
+			Usage {
+				lines: deltas(&[(0, &[("Rust", 5)]), (1, &[("Rust", 2)])]),
+				repos: deltas(&[(0, &[("Rust", 1)]), (1, &[("Rust", 1)])]),
+			}
+		);
 	}
 }

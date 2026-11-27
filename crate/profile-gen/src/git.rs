@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 
 use crate::error::Result;
 
@@ -60,6 +60,20 @@ pub(crate) fn head_sha(repo: &Path) -> Result<Option<String>> {
 		Some(1) => Ok(None),
 		_ => Err(failure(repo, &["rev-parse"], &output.stderr)),
 	}
+}
+
+pub(crate) fn output(repo: &Path, args: &[&str]) -> Result<Output> {
+	command(repo).args(args).output().map_err(Into::into)
+}
+
+pub(crate) fn run(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
+	output(repo, args).and_then(|output| {
+		if output.status.success() {
+			Ok(output.stdout)
+		} else {
+			Err(failure(repo, args, &output.stderr))
+		}
+	})
 }
 
 pub(crate) fn unquote_path(printed: &str) -> String {

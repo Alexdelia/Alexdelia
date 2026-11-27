@@ -6,7 +6,7 @@ use super::feeder::{
 };
 use super::format::{
 	animate, animate_transform, arrow, compact, discrete, escape, float, key_time, month, num,
-	percent, totals_label, trend_word, whole_ms,
+	percent, signed_compact, totals_label, trend_word, whole_ms,
 };
 use super::heat::Heat;
 use super::ranking::{Cell, cell_at, grid, settle};
@@ -544,7 +544,11 @@ fn column(lane: &Lane, race: &Race) -> String {
 		trend = label(
 			TREND_ROW,
 			"m",
-			&format!("{} {}", arrow(trend.direction()), compact(trend.last_year))
+			&format!(
+				"{} {}",
+				arrow(trend.direction()),
+				signed_compact(trend.change())
+			)
 		),
 	)
 }
@@ -850,11 +854,22 @@ mod tests {
 	fn spread(usage: &mut Usage, name: &'static str, weeks: Range<i64>, lines: u64) {
 		for index in weeks {
 			*usage
-				.weeks
+				.lines
 				.entry(week(index))
 				.or_default()
 				.entry(name)
-				.or_default() += lines;
+				.or_default() += i64::try_from(lines).unwrap();
+		}
+	}
+
+	fn present_in_repos(usage: &mut Usage, name: &'static str, indices: &[i64]) {
+		for index in indices {
+			*usage
+				.repos
+				.entry(week(*index))
+				.or_default()
+				.entry(name)
+				.or_default() += 1;
 		}
 	}
 
@@ -875,9 +890,7 @@ mod tests {
 			("TypeScript", &[100]),
 		];
 		for (name, indices) in first_use {
-			usage
-				.first_use
-				.insert(name, indices.iter().map(|index| week(*index)).collect());
+			present_in_repos(&mut usage, name, indices);
 		}
 		let result = timeline(&usage, 5, 150);
 		assert_eq!(result.frames.len(), 150);
@@ -902,9 +915,8 @@ mod tests {
 				let lines = (u64::try_from(index).unwrap() * 37 + offset * 101) % 997;
 				spread(&mut usage, name, index..index + 1, lines);
 			}
-			usage
-				.first_use
-				.insert(name, (0..40).map(|index| week(index * 13)).collect());
+			let indices: Vec<i64> = (0..40).map(|index| index * 13).collect();
+			present_in_repos(&mut usage, name, &indices);
 		}
 		timeline(&usage, 16, 520)
 	}
@@ -1071,8 +1083,8 @@ mod tests {
 				},
 				since: week(0),
 				trend: Trend {
-					last_year: 10,
-					previous_year: 0,
+					now: 10,
+					year_ago: 0,
 				},
 			}],
 			frames: vec![Frame {
@@ -2363,35 +2375,50 @@ mod tests {
 		let document = Document::parse(&svg).unwrap();
 		let has = |list: &[String], expected: &str| list.iter().any(|text| text == expected);
 		let rust = text_list(column(&document, "Rust"));
-		for expected in [
-			"Rust",
-			"21.9%",
-			"42.0%",
-			"28",
-			"4.2k",
-			"1",
-			"3",
-			"2020",
-			"\u{2192} 1.4k",
-		] {
+		for expected in ["Rust", "21.9%", "42.0%", "28", "4.2k", "1", "3", "2020"] {
 			assert!(has(&rust, expected), "{expected} in {rust:?}");
 		}
 		let nix = text_list(column(&document, "Nix"));
-		assert!(has(&nix, "2021") && has(&nix, "\u{2191} 420"), "{nix:?}");
+		assert!(has(&nix, "2021"), "{nix:?}");
 		let go = column(&document, "Go");
 		assert_eq!(shown_text(go, "cl", LINES_ROW), "80");
 		assert_eq!(shown_text(go, "cr", REPOS_ROW), "0");
-		let go_texts = text_list(go);
-		assert!(
-			has(&go_texts, "2020") && has(&go_texts, "\u{2193} 2"),
-			"{go_texts:?}"
-		);
+		assert!(has(&text_list(go), "2020"));
 		let root = text_list(document.root());
 		assert!(has(&root, "2022-11"));
 		for header in HEADER_LIST {
 			let count = root.iter().filter(|text| *text == header).count();
 			assert_eq!(count, 1, "{header}");
 		}
+	}
+
+	#[test]
+	fn trend_label_shows_signed_change() {
+		let mut usage = Usage::default();
+		spread(&mut usage, "Rust", 0..150, 28);
+		spread(&mut usage, "Nix", 60..140, 10);
+		spread(&mut usage, "C", 0..30, 100);
+		*usage
+			.lines
+			.entry(week(120))
+			.or_default()
+			.entry("C")
+			.or_default() -= 1_000;
+		spread(&mut usage, "Go", 20..100, 1);
+		let svg = render_languages(&timeline(&usage, 4, 150), Variant::Dark, PACE);
+		let document = Document::parse(&svg).unwrap();
+		let trend_y = num(TREND_ROW, 1);
+		let trend = |name: &str| {
+			column(&document, name)
+				.descendants()
+				.find(|node| node.has_tag_name("text") && node.attribute("y") == Some(&trend_y))
+				.map(text_of)
+				.unwrap()
+		};
+		assert_eq!(trend("Rust"), "\u{2191} +1.4k");
+		assert_eq!(trend("Nix"), "\u{2191} +420");
+		assert_eq!(trend("C"), "\u{2193} -1.0k");
+		assert_eq!(trend("Go"), "\u{2192} +2");
 	}
 
 	#[test]
@@ -2964,7 +2991,7 @@ mod tests {
 					spread(&mut usage, name, index..index + 1, lines);
 				}
 			}
-			usage.first_use.insert(name, vec![week(offset * 12)]);
+			present_in_repos(&mut usage, name, &[offset * 12]);
 		}
 		timeline(&usage, 16, 520)
 	}

@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
-use std::process::Output;
 
 use crate::error::Result;
-use crate::git;
+use crate::git::{self, output, run};
 use crate::history::{MAX_ADDED_PER_FILE, is_patch, split_numstat};
 
+pub(crate) const BLAME_OPTIONS: [&str; 3] = ["-w", "-M", "-C"];
 const IGNORE_REVS_FILE: &str = ".git-blame-ignore-revs";
 const SHA_HEX_LENGTH: usize = 40;
 const PATCH_TARGET_PREFIX: &str = "b/";
@@ -20,8 +20,12 @@ pub struct Ownership {
 }
 
 impl Ownership {
-	fn counts(&self, sha: &str, filename: &str) -> bool {
+	pub(crate) fn is_mine(&self, sha: &str) -> bool {
 		self.mine.contains(sha)
+	}
+
+	fn counts(&self, sha: &str, filename: &str) -> bool {
+		self.is_mine(sha)
 			&& !self
 				.capped
 				.get(sha)
@@ -120,16 +124,31 @@ fn capped_pairs(log: &str, mine: &HashSet<String>) -> HashMap<String, HashSet<St
 }
 
 pub fn owned_lines(repo: &Path, commit: &str, path: &str, ownership: &Ownership) -> Result<Owned> {
-	let ignored = ignored_revs(repo, commit, ownership)?;
-	let mut args = vec!["blame", "--line-porcelain", "-w", "-M", "-C"];
-	for rev in &ignored {
+	ignored_revs(repo, commit, ownership)
+		.and_then(|ignored| owned_lines_ignoring(repo, commit, path, ownership, &ignored))
+}
+
+pub(crate) fn owned_lines_ignoring(
+	repo: &Path,
+	commit: &str,
+	path: &str,
+	ownership: &Ownership,
+	ignored: &[String],
+) -> Result<Owned> {
+	let mut args = vec!["blame", "--line-porcelain"];
+	args.extend(BLAME_OPTIONS);
+	for rev in ignored {
 		args.extend(["--ignore-rev", rev]);
 	}
 	args.extend([commit, "--", path]);
 	run(repo, &args).map(|porcelain| tally(&porcelain, is_patch(path), ownership))
 }
 
-fn ignored_revs(repo: &Path, commit: &str, ownership: &Ownership) -> Result<Vec<String>> {
+pub(crate) fn ignored_revs(
+	repo: &Path,
+	commit: &str,
+	ownership: &Ownership,
+) -> Result<Vec<String>> {
 	let blob = format!("{commit}:{IGNORE_REVS_FILE}");
 	let args = ["rev-parse", "--verify", "--quiet", &blob];
 	output(repo, &args).and_then(|output| match output.status.code() {
@@ -218,20 +237,6 @@ fn patch_target(printed: &str) -> Option<String> {
 		path.strip_prefix(PATCH_TARGET_PREFIX)
 			.unwrap_or(&path)
 			.to_owned()
-	})
-}
-
-fn output(repo: &Path, args: &[&str]) -> Result<Output> {
-	git::command(repo).args(args).output().map_err(Into::into)
-}
-
-fn run(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
-	output(repo, args).and_then(|output| {
-		if output.status.success() {
-			Ok(output.stdout)
-		} else {
-			Err(git::failure(repo, args, &output.stderr))
-		}
 	})
 }
 

@@ -195,8 +195,8 @@ mod tests {
 				},
 				since: start,
 				trend: Trend {
-					last_year: 0,
-					previous_year: 0,
+					now: 0,
+					year_ago: 0,
 				},
 			})
 			.collect();

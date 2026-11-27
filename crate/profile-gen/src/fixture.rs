@@ -60,6 +60,14 @@ impl FixtureRepo {
 		self.git(&["switch", "-q", name], "committer@example.com", 0);
 	}
 
+	pub(crate) fn fast_forward(&self, branch: &str) {
+		self.git(
+			&["merge", "-q", "--ff-only", branch],
+			"committer@example.com",
+			0,
+		);
+	}
+
 	pub(crate) fn merge(
 		&self,
 		author_email: &str,

@@ -83,7 +83,7 @@ pub fn render(
 	let cache = refresh_cache(config, &detector, fetch, token, &paths.work, &cache_path)?;
 	cache::save(&cache, &cache_path)?;
 
-	let usage = cache::usage(&cache).merge(private);
+	let usage = cache::usage(&cache).merge(&private);
 	let timeline = timeline(&usage, config.top_n, config.max_frames);
 	for (variant, file) in [
 		(Variant::Dark, "languages-dark.svg"),
@@ -224,7 +224,7 @@ mod tests {
 
 		std::fs::write(
 			&paths.private,
-			r#"{"weeks":{"2020-01-06":{"Haskell":5000}},"first_use":{"Haskell":["2020-01-06"]}}"#,
+			r#"{"lines":{"2020-01-06":{"Haskell":5000}},"repos":{"2020-01-06":{"Haskell":1}}}"#,
 		)
 		.unwrap();
 		render(&config(), &fetch, None, &paths).unwrap();
@@ -258,9 +258,9 @@ mod tests {
 		serde_json::from_slice(&read(paths, "cache/languages.json")).unwrap()
 	}
 
-	fn language_totals(cache: &Cache) -> BTreeMap<&'static str, u64> {
+	fn language_totals(cache: &Cache) -> BTreeMap<&'static str, i64> {
 		let mut totals = BTreeMap::new();
-		for lines in cache::usage(cache).weeks.values() {
+		for lines in cache::usage(cache).lines.values() {
 			for (language, count) in lines {
 				*totals.entry(*language).or_default() += count;
 			}
