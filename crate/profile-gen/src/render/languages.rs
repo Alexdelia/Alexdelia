@@ -435,7 +435,7 @@ fn header(timeline: &Timeline, race: &Race, colors: Palette) -> String {
 			".h text{{text-anchor:end}}",
 			".d text{{font-size:13px;text-anchor:end;fill:{muted}}}",
 			".d .c{{font-size:11px}}",
-			".d .q{{font-size:9px;fill:{text}}}",
+			".d .q{{font-size:9px}}",
 			".t{{font-size:11px;font-weight:700}}",
 			"</style>",
 		),
@@ -2784,11 +2784,13 @@ mod tests {
 				assert!(DATE_X <= WIDTH);
 			}
 			let class = label.attribute("class").unwrap();
-			let rule = format!(
-				".d .{class}{{font-size:9px;fill:{}}}",
-				palette(variant).text
-			);
+			let rule = format!(".d .{class}{{font-size:9px}}");
 			assert!(svg.contains(&rule), "{rule}");
+			let shared_fill = format!(
+				".d text{{font-size:13px;text-anchor:end;fill:{}}}",
+				palette(variant).muted
+			);
+			assert!(svg.contains(&shared_fill), "{shared_fill}");
 		}
 	}
 
