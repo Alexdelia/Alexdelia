@@ -1,13 +1,15 @@
 use std::collections::BTreeSet;
 
-use super::feeder::{FLIGHT_RADIUS, FREE_FALL_SPLINE, Flight, GRAVITY, PRONG_Y, SLING_X};
+use super::feeder::{
+	ARC_HEADROOM, FLIGHT_RADIUS, FREE_FALL_SPLINE, Flight, GRAVITY, PRONG_Y, SLING_X,
+};
 use super::format::{discrete, float, num, seconds, whole_ms};
 use super::heat::{JITTER_SALT, hash};
 use super::languages::WIDTH;
 use crate::theme::Palette;
 
 const MAX_CAPACITY: u32 = 64;
-const TUBE_TOP: f64 = 8.0;
+pub(super) const TUBE_TOP: f64 = ARC_HEADROOM;
 const TUBE_BOTTOM: f64 = PRONG_Y - 6.0;
 const TUBE_RADIUS: f64 = FLIGHT_RADIUS;
 const TUBE_STEP: f64 = 2.0 * TUBE_RADIUS;
@@ -360,7 +362,7 @@ mod tests {
 		let places = (TUBE_BOTTOM - TUBE_TOP) / TUBE_STEP;
 		let capacity = f64::from(u32::try_from(tube_capacity()).unwrap());
 		assert!(capacity <= places && capacity + 1.0 > places, "{capacity}");
-		assert_eq!(tube_capacity(), 23);
+		assert_eq!(tube_capacity(), 21);
 		assert!(FLIGHT_SCALE.mul_add(-TOKEN_RADIUS, TUBE_RADIUS).abs() < 1e-9);
 	}
 

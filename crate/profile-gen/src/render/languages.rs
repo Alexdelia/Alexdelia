@@ -1,6 +1,6 @@
 use super::clock::{Clock, race_ms};
 use super::crossing::{Track, close_runs};
-use super::feed::{Feed, Shown, feed_list, growth, paired, shown_list, throw_list};
+use super::feed::{Feed, Shown, bar_steps, feed_list, paired, shown_list, throw_list};
 use super::feeder::{
 	FLIGHT_RADIUS, Flight, POUCH_X, absorbed_ms, feeder, flight_ms, flights, fork, throw_ms,
 };
@@ -12,7 +12,7 @@ use super::heat::Heat;
 use super::ranking::{Cell, cell_at, grid, settle};
 use super::schedule::{Shot, schedule};
 use super::ticker::{Row, ticker};
-use super::tube::tube_capacity;
+use super::tube::{TUBE_TOP, tube_capacity};
 use crate::icons::icon_path;
 use crate::language::Language;
 use crate::theme::{FONT_STACK, Palette, Variant, palette};
@@ -21,7 +21,7 @@ use crate::timeline::{Frame, LanguageSummary, Timeline};
 pub(super) const WIDTH: f64 = 880.0;
 const HEIGHT: f64 = 432.0;
 pub(super) const GROUND: f64 = 300.0;
-const CHART_HEIGHT: f64 = 196.0;
+const CHART_HEIGHT: f64 = GROUND - TUBE_TOP;
 const MIN_BAR_HEIGHT: f64 = 2.0;
 const GUTTER: f64 = 60.0;
 const RIGHT_MARGIN: f64 = 8.0;
@@ -62,6 +62,13 @@ const DATE_ROW: f64 = 72.0;
 const DATE_STEP: f64 = 20.0;
 const TOTALS_ROW: f64 = DATE_ROW + 18.0;
 const TOTALS_STEP: f64 = 16.0;
+const DATE_WIDTH: f64 = 140.0;
+const TOTALS_WIDTH: f64 = 220.0;
+const SCALE_ROW: f64 = TOTALS_ROW + 13.0;
+const SCALE_DESCENT: f64 = 3.0;
+const TEXT_GAP: f64 = 2.0;
+const TEXT_LEFT: f64 = DATE_X - TOTALS_WIDTH;
+const TEXT_ROOM: f64 = GROUND - SCALE_ROW - SCALE_DESCENT - TEXT_GAP;
 
 #[must_use]
 pub fn render_languages(timeline: &Timeline, variant: Variant, seconds_per_year: f64) -> String {
@@ -139,7 +146,7 @@ struct Lane<'a> {
 	summary: &'a LanguageSummary,
 	cells: Vec<Cell>,
 	x: Vec<f64>,
-	growth: Vec<(u32, f64)>,
+	steps: Vec<(u32, u64)>,
 	shown: Vec<Shown>,
 	crossing: Vec<(usize, usize)>,
 }
@@ -157,8 +164,18 @@ impl Lane<'_> {
 		cell_at(&self.cells, clock.frame_of(tick))
 	}
 
-	fn final_height(&self) -> f64 {
-		self.growth.last().map_or(0.0, |(_, height)| *height)
+	fn final_lines(&self) -> u64 {
+		self.steps.last().map_or(0, |(_, lines)| *lines)
+	}
+
+	fn lines_under_text(&self, clock: &Clock, half_width: f64) -> u64 {
+		let shown = shown_ticks(&self.shown, clock);
+		let under_text = |tick: usize| self.x.get(tick).is_some_and(|x| x + half_width > TEXT_LEFT);
+		(0..clock.ticks())
+			.filter(|tick| shown[*tick] && (under_text(*tick) || under_text(tick + 1)))
+			.map(|tick| lines_during(&self.steps, clock.ms(tick), clock.ms(tick + 1)))
+			.max()
+			.unwrap_or(0)
 	}
 }
 
@@ -168,10 +185,33 @@ struct Race<'a> {
 	lanes: Vec<Lane<'a>>,
 	flight_list: Vec<Flight>,
 	heat: Heat,
+	scale: f64,
 }
 
 impl<'a> Race<'a> {
 	fn new(timeline: &'a Timeline, seconds_per_year: f64) -> Self {
+		let mut race = Self::scaled(timeline, seconds_per_year, 0.0);
+		loop {
+			let clearing = race.scale_clearing_text();
+			if clearing <= race.scale {
+				return race;
+			}
+			race = Self::scaled(timeline, seconds_per_year, clearing);
+		}
+	}
+
+	fn scale_clearing_text(&self) -> f64 {
+		let half_width = self.layout.bar_width() / 2.0;
+		let under_text = self
+			.lanes
+			.iter()
+			.map(|lane| lane.lines_under_text(&self.clock, half_width))
+			.max()
+			.unwrap_or(0);
+		float(under_text) * (CHART_HEIGHT / TEXT_ROOM).powi(2)
+	}
+
+	fn scaled(timeline: &'a Timeline, seconds_per_year: f64, least_scale: f64) -> Self {
 		let languages: &[LanguageSummary] = if timeline.frames.is_empty() {
 			&[]
 		} else {
@@ -182,19 +222,20 @@ impl<'a> Race<'a> {
 		let provisional = Clock::new(frames, race, 0);
 		let row_list = grid(timeline, &provisional);
 		let layout = Layout::new(languages.len().min(timeline.top_n));
-		let top_lines = row_list
+		let peak_lines = row_list
 			.iter()
-			.filter_map(|row| row.last())
+			.flatten()
 			.map(|cell| cell.lines)
 			.max()
 			.unwrap_or(0);
+		let scale = float(peak_lines).max(least_scale);
 		let feed_list = feed_list(&row_list);
 		let plan = schedule(
 			&throw_list(&feed_list, provisional.tick_ms, |feed| {
 				let slot = cell_at(&row_list[feed.lane], feed.frame).slot;
 				flight_ms(
 					layout.center(slot) - POUCH_X,
-					landing_y(bar_height(feed.fed_before, top_lines)),
+					landing_y(bar_height(feed.fed_before, scale)),
 				)
 			}),
 			tube_capacity(),
@@ -213,15 +254,13 @@ impl<'a> Race<'a> {
 		let cells_list: Vec<&[Cell]> = lanes.iter().map(|lane| lane.cells.as_slice()).collect();
 		let shown = shown_list(&cells_list, &flight_list, &clock);
 		for (lane, shown) in lanes.iter_mut().zip(shown) {
-			lane.growth = growth(lane.index, &lane.cells, &flight_list)
-				.into_iter()
-				.map(|(ms, lines)| (ms, bar_height(lines, top_lines)))
-				.collect();
+			lane.steps = bar_steps(lane.index, &lane.cells, &flight_list, &clock);
 			lane.shown = shown;
 		}
 		for flight in &mut flight_list {
 			let lane = &lanes[flight.lane];
-			flight.landing_y = landing_y(height_before(&lane.growth, flight.land_ms));
+			flight.landing_y =
+				landing_y(bar_height(lines_before(&lane.steps, flight.land_ms), scale));
 			flight.to_x = aim_x(flight, &lane.x, clock.tick_ms, layout.bar_width() / 2.0);
 		}
 		lanes.retain(|lane| lane.cells.iter().any(|cell| cell.visible));
@@ -239,6 +278,7 @@ impl<'a> Race<'a> {
 			lanes,
 			flight_list,
 			heat,
+			scale,
 		}
 	}
 }
@@ -287,12 +327,25 @@ fn landing_y(bar_height: f64) -> f64 {
 	GROUND - bar_height - FLIGHT_RADIUS
 }
 
-fn height_before(growth: &[(u32, f64)], ms: u32) -> f64 {
-	growth
+fn lines_before(steps: &[(u32, u64)], ms: u32) -> u64 {
+	steps
 		.iter()
 		.take_while(|(step_ms, _)| *step_ms < ms)
 		.last()
-		.map_or(0.0, |(_, height)| *height)
+		.map_or(0, |(_, lines)| *lines)
+}
+
+fn lines_during(steps: &[(u32, u64)], from: f64, to: f64) -> u64 {
+	let at_start = steps
+		.iter()
+		.take_while(|(step_ms, _)| f64::from(*step_ms) <= from)
+		.last()
+		.map_or(0, |(_, lines)| *lines);
+	steps
+		.iter()
+		.filter(|(step_ms, _)| (from..=to).contains(&f64::from(*step_ms)))
+		.map(|(_, lines)| *lines)
+		.fold(at_start, u64::max)
 }
 
 fn aim_x(flight: &Flight, x_list: &[f64], tick_ms: u32, half_width: f64) -> f64 {
@@ -317,11 +370,11 @@ fn x_at(x_list: &[f64], ms: f64, tick_ms: u32) -> f64 {
 	(to - from).mul_add((ms / f64::from(tick_ms) - float(index)).min(1.0), from)
 }
 
-fn bar_height(lines: u64, top_lines: u64) -> f64 {
+fn bar_height(lines: u64, scale: f64) -> f64 {
 	if lines == 0 {
 		return 0.0;
 	}
-	let ratio = (float(lines) / float(top_lines.max(1))).sqrt();
+	let ratio = (float(lines) / scale.max(1.0)).sqrt();
 	(ratio * CHART_HEIGHT).max(MIN_BAR_HEIGHT)
 }
 
@@ -343,7 +396,7 @@ fn lane<'a>(
 		index,
 		summary,
 		x: settle(&target_list, f64::from(clock.tick_ms)),
-		growth: Vec::new(),
+		steps: Vec::new(),
 		shown: Vec::new(),
 		crossing: Vec::new(),
 		cells,
@@ -364,6 +417,7 @@ fn header(timeline: &Timeline, race: &Race, colors: Palette) -> String {
 			".h text{{text-anchor:end}}",
 			".d text{{font-size:13px;text-anchor:end;fill:{muted}}}",
 			".d .c{{font-size:11px}}",
+			".d .q{{font-size:9px;fill:{text}}}",
 			".t{{font-size:11px;font-weight:700}}",
 			"</style>",
 		),
@@ -402,7 +456,7 @@ fn description(timeline: &Timeline, race: &Race) -> String {
 		})
 		.collect();
 	format!(
-		"Share of lines added per language{period}, racing week by week, fed by a slingshot. Final: {}.",
+		"Share of existing lines per language{period}, racing week by week, fed by a slingshot. Final: {}.",
 		summary.join("; ")
 	)
 }
@@ -422,8 +476,8 @@ fn defs(race: &Race, colors: Palette) -> String {
 			"<path d=\"M8 0 2 6\" stroke=\"{ground}\"/>",
 			"</pattern>",
 			"{share}{lines}{repos}",
-			"<clipPath id=\"cd\"><rect x=\"{date_x}\" y=\"{date_y}\" width=\"140\" height=\"18\"/></clipPath>",
-			"<clipPath id=\"ct\"><rect x=\"{totals_x}\" y=\"{totals_y}\" width=\"220\" height=\"15\"/></clipPath>",
+			"<clipPath id=\"cd\"><rect x=\"{date_x}\" y=\"{date_y}\" width=\"{date_w}\" height=\"18\"/></clipPath>",
+			"<clipPath id=\"ct\"><rect x=\"{totals_x}\" y=\"{totals_y}\" width=\"{totals_w}\" height=\"15\"/></clipPath>",
 			"{tokens}",
 			"</defs>",
 		),
@@ -432,10 +486,12 @@ fn defs(race: &Race, colors: Palette) -> String {
 		share = clip("cs", half, SHARE_ROW - 12.0, 15.0),
 		lines = clip("cl", half, LINES_ROW - 10.5, 13.5),
 		repos = clip("cr", half, REPOS_ROW - 10.5, 13.5),
-		date_x = num(-140.0, 1),
+		date_x = num(-DATE_WIDTH, 1),
 		date_y = num(DATE_ROW - 14.0, 1),
-		totals_x = num(-220.0, 1),
+		date_w = num(DATE_WIDTH, 1),
+		totals_x = num(-TOTALS_WIDTH, 1),
 		totals_y = num(TOTALS_ROW - 12.0, 1),
+		totals_w = num(TOTALS_WIDTH, 1),
 		tokens = tokens.concat(),
 	)
 }
@@ -534,8 +590,8 @@ fn column(lane: &Lane, race: &Race) -> String {
 		radius = num(TOP_RADIUS, 1),
 		color = lane.summary.language.color,
 		base = num(GROUND + TOP_RADIUS, 1),
-		height = num(lane.final_height() + TOP_RADIUS, 1),
-		grow = growth_animation(lane, duration),
+		height = num(bar_height(lane.final_lines(), race.scale) + TOP_RADIUS, 1),
+		grow = height_animation(lane, race.scale, duration),
 		index = lane.index,
 		token_y = num(TOKEN_ROW, 1),
 		name_label = name_label(lane.name(), race.layout.label_room()),
@@ -553,13 +609,13 @@ fn column(lane: &Lane, race: &Race) -> String {
 	)
 }
 
-fn growth_animation(lane: &Lane, duration: f64) -> String {
+fn height_animation(lane: &Lane, scale: f64, duration: f64) -> String {
 	discrete(
 		"<animate attributeName=\"height\"",
 		&num(TOP_RADIUS, 1),
-		lane.growth
+		lane.steps
 			.iter()
-			.map(|(ms, height)| (*ms, num(height + TOP_RADIUS, 1)))
+			.map(|(ms, lines)| (*ms, num(bar_height(*lines, scale) + TOP_RADIUS, 1)))
 			.collect(),
 		duration,
 	)
@@ -788,7 +844,7 @@ fn date_and_totals(timeline: &Timeline, clock: &Clock) -> String {
 		step: TOTALS_STEP,
 	};
 	format!(
-		"<g class=\"d\" transform=\"translate({} 0)\">{}{}</g>",
+		"<g class=\"d\" transform=\"translate({} 0)\">{}{}<text data-scale=\"\" class=\"q\" y=\"{}\">(sqrt scale)</text></g>",
 		num(DATE_X, 1),
 		ticker(
 			state_list(|frame| month(frame.week)),
@@ -800,6 +856,7 @@ fn date_and_totals(timeline: &Timeline, clock: &Clock) -> String {
 			totals,
 			clock.duration()
 		),
+		num(SCALE_ROW, 1),
 	)
 }
 
@@ -919,6 +976,114 @@ mod tests {
 			present_in_repos(&mut usage, name, &indices);
 		}
 		timeline(&usage, 16, 520)
+	}
+
+	fn remove(usage: &mut Usage, name: &'static str, index: i64, lines: i64) {
+		*usage
+			.lines
+			.entry(week(index))
+			.or_default()
+			.entry(name)
+			.or_default() -= lines;
+	}
+
+	fn shrinking() -> Timeline {
+		let mut usage = Usage::default();
+		spread(&mut usage, "Rust", 0..4, 100);
+		remove(&mut usage, "Rust", 10, 300);
+		spread(&mut usage, "C", 0..20, 2);
+		timeline(&usage, 2, 520)
+	}
+
+	fn comeback() -> Timeline {
+		let mut usage = Usage::default();
+		spread(&mut usage, "Rust", 0..40, 100);
+		spread(&mut usage, "Go", 0..10, 50);
+		remove(&mut usage, "Go", 25, 400);
+		spread(&mut usage, "C", 0..1, 200);
+		spread(&mut usage, "C", 15..16, 20);
+		timeline(&usage, 2, 520)
+	}
+
+	fn relapse() -> Timeline {
+		let mut usage = Usage::default();
+		spread(&mut usage, "Rust", 0..40, 100);
+		spread(&mut usage, "Go", 0..10, 50);
+		remove(&mut usage, "Go", 25, 400);
+		spread(&mut usage, "C", 0..1, 200);
+		spread(&mut usage, "C", 12..13, 100);
+		remove(&mut usage, "C", 14, 50);
+		spread(&mut usage, "C", 25..26, 30);
+		timeline(&usage, 2, 520)
+	}
+
+	fn vanishing() -> Timeline {
+		let mut usage = Usage::default();
+		spread(&mut usage, "Rust", 0..30, 100);
+		spread(&mut usage, "Go", 0..10, 50);
+		remove(&mut usage, "Go", 20, 500);
+		timeline(&usage, 2, 520)
+	}
+
+	fn frame_ms(clock: &Clock, frame: usize) -> f64 {
+		clock.ms(clock.lead + frame)
+	}
+
+	fn lane_cells(data: &Timeline, clock: &Clock, name: &str) -> Vec<Cell> {
+		let index = data
+			.languages
+			.iter()
+			.position(|summary| summary.language.name == name)
+			.unwrap();
+		grid(data, clock).swap_remove(index)
+	}
+
+	fn fade_opacity_at(point_list: &[(f64, f64)], ms: f64) -> f64 {
+		point_list
+			.iter()
+			.position(|(at, _)| *at > ms + 0.5)
+			.map_or_else(
+				|| point_list.last().map_or(1.0, |point| point.1),
+				|after| point_list[after - 1].1.max(point_list[after].1),
+			)
+	}
+
+	fn bar_tops_under_text(document: &Document, name: &str, text_left: f64) -> Vec<f64> {
+		let column = column(document, name);
+		let hidden_at_rest = column.attribute("opacity") == Some("0");
+		let fade = fade_points(column);
+		let shown = |ms: f64| {
+			if fade.is_empty() {
+				!hidden_at_rest
+			} else {
+				fade_opacity_at(&fade, ms) > 0.0
+			}
+		};
+		let x_list = translate_list(column);
+		let duration = ms(
+			column
+				.children()
+				.find(|child| child.attribute("type") == Some("translate"))
+				.unwrap(),
+			"dur",
+		);
+		let x_step = duration / float(x_list.len() - 1);
+		let tick_list: Vec<f64> = (0..x_list.len()).map(|tick| float(tick) * x_step).collect();
+		let x_at = |ms: f64| {
+			let index = tick_list.partition_point(|tick| *tick <= ms).max(1) - 1;
+			let next = x_list[(index + 1).min(x_list.len() - 1)];
+			let part = (ms / x_step - float(index)).clamp(0.0, 1.0);
+			(next - x_list[index]).mul_add(part, x_list[index])
+		};
+		let half = number(tagged(document, "data-bar", name), "width") / 2.0;
+		let step_list = height_step_list(document, name);
+		tick_list
+			.iter()
+			.flat_map(|tick| [*tick, tick + x_step / 2.0])
+			.chain(step_list.iter().map(|(at, _)| *at))
+			.filter(|at| *at <= duration && shown(*at) && x_at(*at) + half > text_left)
+			.map(|at| GROUND - height_at(&step_list, at))
+			.collect()
 	}
 
 	fn value_width(text: &str) -> f64 {
@@ -1423,6 +1588,51 @@ mod tests {
 	}
 
 	#[test]
+	fn visible_bar_rises_only_on_landing_or_fade_in() {
+		let mut caught_up = 0;
+		for data in [fixture(), shrinking(), comeback(), vanishing(), relapse()] {
+			let svg = render_languages(&data, Variant::Dark, PACE);
+			let document = Document::parse(&svg).unwrap();
+			for summary in &data.languages {
+				let name = summary.language.name;
+				let column = column(&document, name);
+				let step_list = height_step_list(&document, name);
+				let contact_list: Vec<f64> = flight_nodes(&document)
+					.into_iter()
+					.filter(|node| node.attribute("data-flight") == Some(name))
+					.flat_map(|node| {
+						let pool = Pool::of(node);
+						pool.begin_list
+							.iter()
+							.map(|begin| contact_ms(&pool, *begin, &step_list))
+							.collect::<Vec<_>>()
+					})
+					.collect();
+				let fade_in_list: Vec<f64> = fade_points(column)
+					.windows(2)
+					.filter(|pair| pair[0].1 < pair[1].1)
+					.map(|pair| pair[0].0)
+					.collect();
+				for pair in step_list.windows(2).filter(|pair| pair[1].1 > pair[0].1) {
+					let at = pair[1].0;
+					if contact_list
+						.iter()
+						.any(|contact| (contact - at).abs() <= 3.0)
+					{
+						continue;
+					}
+					assert!(
+						fade_in_list.iter().any(|rise| (rise - at).abs() <= 1.0),
+						"{name} {at} {pair:?}"
+					);
+					caught_up += 1;
+				}
+			}
+		}
+		assert!(caught_up >= 1, "{caught_up}");
+	}
+
+	#[test]
 	fn entering_column_opens_on_first_fire() {
 		let mut entered = 0;
 		for data in [fixture(), wanderer()] {
@@ -1447,10 +1657,14 @@ mod tests {
 
 	#[test]
 	fn bar_steps_never_follow_their_frame() {
-		for data in [fixture(), swap(), wanderer()] {
+		for data in [fixture(), swap(), wanderer(), shrinking(), comeback()] {
 			let race = Race::new(&data, PACE);
 			let clock = &race.clock;
 			let duration = clock.duration();
+			let key = |ms: f64| -> f64 { key_time(ms, duration).parse().unwrap() };
+			let frame_key_list: Vec<f64> = (0..data.frames.len())
+				.map(|frame| key(frame_ms(clock, frame)))
+				.collect();
 			let svg = render_languages(&data, Variant::Dark, PACE);
 			let document = Document::parse(&svg).unwrap();
 			for lane in &race.lanes {
@@ -1459,20 +1673,19 @@ mod tests {
 					.find(|node| node.attribute("attributeName") == Some("height"))
 					.unwrap();
 				let step_key_list: Vec<f64> = number_list(animation, "keyTimes");
-				let mut fed: Vec<&Flight> = race
+				let fed: Vec<&Flight> = race
 					.flight_list
 					.iter()
 					.filter(|flight| flight.lane == lane.index)
 					.collect();
-				fed.sort_by_key(|flight| flight.land_ms);
-				assert_eq!(step_key_list.len(), fed.len() + 1, "{}", lane.name());
-				for (step_key, flight) in step_key_list[1..].iter().zip(fed) {
-					let frame_key: f64 = key_time(clock.ms(clock.lead + flight.frame), duration)
-						.parse()
-						.unwrap();
+				for step_key in &step_key_list[1..] {
+					let landed_in_time = fed.iter().any(|flight| {
+						(key(f64::from(flight.land_ms)) - step_key).abs() < 1e-9
+							&& *step_key <= frame_key_list[flight.frame]
+					});
 					assert!(
-						*step_key <= frame_key,
-						"{} {step_key} {frame_key}",
+						landed_in_time || frame_key_list.contains(step_key),
+						"{} {step_key}",
 						lane.name()
 					);
 				}
@@ -2116,6 +2329,10 @@ mod tests {
 		assert_eq!(title.unwrap().text(), Some("Languages over time"));
 		let desc = root.children().find(|node| node.has_tag_name("desc"));
 		let desc = desc.unwrap().text().unwrap();
+		assert!(
+			desc.starts_with("Share of existing lines per language from "),
+			"{desc}"
+		);
 		assert!(desc.contains("Rust 42.0%"), "{desc}");
 		assert!(desc.contains("TypeScript 3.0%"), "{desc}");
 		for hidden in ["other", "Shell", "Go "] {
@@ -2321,21 +2538,204 @@ mod tests {
 	}
 
 	#[test]
-	fn bar_height_never_decreases() {
+	fn bar_shrinks_without_shot() {
+		let data = shrinking();
+		let race = Race::new(&data, PACE);
+		let svg = render_languages(&data, Variant::Dark, PACE);
+		let document = Document::parse(&svg).unwrap();
+		let step_list = height_step_list(&document, "Rust");
+		let drop_list: Vec<(f64, f64)> = step_list
+			.windows(2)
+			.filter(|pair| pair[1].1 < pair[0].1)
+			.map(|pair| pair[1])
+			.collect();
+		assert_eq!(drop_list.len(), 1, "{step_list:?}");
+		let (drop_ms, dropped) = drop_list[0];
+		assert!(
+			(drop_ms - frame_ms(&race.clock, 10)).abs() < 1.0,
+			"{drop_ms}"
+		);
+		assert!((dropped - CHART_HEIGHT / 2.0).abs() < 0.1, "{dropped}");
+		assert_eq!(fire_list(&document, "Rust").len(), 4);
+		let final_height = number(tagged(&document, "data-bar", "Rust"), "height") - TOP_RADIUS;
+		assert!((final_height - dropped).abs() < 0.1, "{final_height}");
+	}
+
+	#[test]
+	fn scale_tops_at_peak_not_final() {
+		let svg = render_languages(&shrinking(), Variant::Dark, PACE);
+		let document = Document::parse(&svg).unwrap();
+		let step_list = height_step_list(&document, "Rust");
+		let tallest = step_list
+			.iter()
+			.map(|(_, height)| *height)
+			.fold(0.0, f64::max);
+		assert!((tallest - CHART_HEIGHT).abs() < 0.01, "{step_list:?}");
+		let last = step_list.last().unwrap().1;
+		assert!((last - CHART_HEIGHT / 2.0).abs() < 0.1, "{last}");
+	}
+
+	#[test]
+	fn column_reenters_without_growth_fades_in_without_shot() {
+		let data = comeback();
+		let race = Race::new(&data, PACE);
+		let cells = lane_cells(&data, &race.clock, "C");
+		let hidden = cells.iter().position(|cell| !cell.visible).unwrap();
+		let back = hidden
+			+ cells[hidden..]
+				.iter()
+				.position(|cell| cell.visible)
+				.unwrap();
+		assert_eq!(cells[back].lines, cells[back - 1].lines);
+		assert!(cells[back].lines > cells[0].lines);
+		let svg = render_languages(&data, Variant::Dark, PACE);
+		let document = Document::parse(&svg).unwrap();
+		let c = column(&document, "C");
+		assert_eq!(opacity_steps(c), [1.0, 0.0, 1.0]);
+		let rise_list: Vec<f64> = fade_points(c)
+			.windows(2)
+			.filter(|pair| pair[0].1 < pair[1].1)
+			.map(|pair| pair[0].0)
+			.collect();
+		assert_eq!(rise_list.len(), 1);
+		let back_ms = frame_ms(&race.clock, back);
+		assert!(
+			(rise_list[0] - back_ms).abs() < 1.0,
+			"{rise_list:?} {back_ms}"
+		);
+		assert_eq!(fire_list(&document, "C").len(), 1);
+		let step_list = height_step_list(&document, "C");
+		let expected = CHART_HEIGHT * (220.0_f64 / 4_000.0).sqrt();
+		let shown_height = height_at(&step_list, rise_list[0]);
+		assert!((shown_height - expected).abs() < 0.1, "{shown_height}");
+	}
+
+	#[test]
+	fn column_at_zero_fades_out() {
+		let data = vanishing();
+		let race = Race::new(&data, PACE);
+		let svg = render_languages(&data, Variant::Dark, PACE);
+		let document = Document::parse(&svg).unwrap();
+		let go = column(&document, "Go");
+		assert_eq!(go.attribute("opacity"), Some("0"));
+		assert_eq!(opacity_steps(go), [1.0, 0.0]);
+		let fall = fall_list(go)[0].0;
+		let gone_ms = frame_ms(&race.clock, 20);
+		assert!((fall - gone_ms).abs() < 1.0, "{fall} {gone_ms}");
+		let step_list = height_step_list(&document, "Go");
+		assert!(
+			height_at(&step_list, gone_ms + 1.0).abs() < 0.01,
+			"{step_list:?}"
+		);
+		assert_eq!(fire_list(&document, "Go").len(), 10);
+	}
+
+	#[test]
+	fn tallest_bar_tops_at_tube_top() {
 		let svg = render_languages(&fixture(), Variant::Dark, PACE);
 		let document = Document::parse(&svg).unwrap();
-		for name in FINAL_ORDER {
-			let heights = height_list(&document, name);
-			assert!(heights.windows(2).all(|pair| pair[0] <= pair[1]), "{name}");
-			let final_height = number(tagged(&document, "data-bar", name), "height");
+		let tallest = FINAL_ORDER
+			.iter()
+			.chain(&HIDDEN_AT_END)
+			.flat_map(|name| height_step_list(&document, name))
+			.map(|(_, height)| height)
+			.fold(0.0, f64::max);
+		assert!((tallest - CHART_HEIGHT).abs() < 0.01, "{tallest}");
+		let (tube_top, _) = tube_box(&document);
+		assert!((GROUND - tallest - tube_top).abs() < 0.01, "{tube_top}");
+	}
+
+	#[test]
+	fn bars_never_reach_date_and_totals_text() {
+		for (data, crowded) in [(fixture(), false), (real_like(), true), (large(), true)] {
+			let svg = render_languages(&data, Variant::Dark, PACE);
+			let document = Document::parse(&svg).unwrap();
+			let totals_clip = tagged(&document, "id", "ct").first_element_child().unwrap();
+			let text_left = DATE_X + number(totals_clip, "x");
+			let scale = document
+				.descendants()
+				.find(|node| node.has_attribute("data-scale"))
+				.unwrap();
+			let text_bottom = number(scale, "y") + 3.0;
+			let top_list: Vec<f64> = data
+				.languages
+				.iter()
+				.filter(|summary| {
+					document
+						.descendants()
+						.any(|node| node.attribute("data-column") == Some(summary.language.name))
+				})
+				.flat_map(|summary| {
+					bar_tops_under_text(&document, summary.language.name, text_left)
+				})
+				.collect();
 			assert!(
-				(heights.last().unwrap() - final_height).abs() < 0.1,
-				"{name}"
+				top_list.iter().all(|top| *top >= text_bottom),
+				"{text_bottom} {:?}",
+				top_list.iter().copied().fold(f64::INFINITY, f64::min)
 			);
+			assert_eq!(top_list.is_empty(), !crowded, "{}", top_list.len());
 		}
-		let python = height_list(&document, "Python");
-		let first_shown = python.iter().find(|height| **height > TOP_RADIUS).unwrap();
-		assert!(*first_shown >= TOP_RADIUS + 2.0);
+	}
+
+	#[test]
+	fn flights_stay_inside_the_svg() {
+		for (index, data) in [real_like(), large(), fixture(), shrinking()]
+			.into_iter()
+			.enumerate()
+		{
+			let svg = render_languages(&data, Variant::Dark, PACE);
+			let document = Document::parse(&svg).unwrap();
+			let mut checked = 0;
+			for node in flight_nodes(&document) {
+				let pool = Pool::of(node);
+				for begin in &pool.begin_list {
+					for (at, (x, y)) in pool.samples(*begin, 80) {
+						assert!(y >= FLIGHT_RADIUS - 0.5, "{index} {at} {y}");
+						assert!(
+							(FLIGHT_RADIUS..=WIDTH - FLIGHT_RADIUS).contains(&x),
+							"{at} {x}"
+						);
+					}
+					checked += 1;
+				}
+			}
+			assert!(checked >= 4, "{checked}");
+		}
+	}
+
+	#[test]
+	fn scale_label_says_sqrt() {
+		for variant in [Variant::Dark, Variant::Light] {
+			let svg = render_languages(&fixture(), variant, PACE);
+			let document = Document::parse(&svg).unwrap();
+			let label_list: Vec<Node> = document
+				.descendants()
+				.filter(|node| node.has_attribute("data-scale"))
+				.collect();
+			assert_eq!(label_list.len(), 1);
+			let label = label_list[0];
+			assert!(label.has_tag_name("text"));
+			assert_eq!(text_of(label), "(sqrt scale)");
+			assert!(number(label, "y") > TOTALS_ROW, "{}", number(label, "y"));
+			let totals = document
+				.descendants()
+				.find(|node| node.attribute("clip-path") == Some("url(#ct)"))
+				.unwrap();
+			assert_eq!(label.parent(), totals.parent());
+			let totals_clip = tagged(&document, "id", "ct").first_element_child().unwrap();
+			let text_left = DATE_X + number(totals_clip, "x");
+			assert!(DATE_X - value_width(&text_of(label)) >= text_left);
+			const {
+				assert!(DATE_X <= WIDTH);
+			}
+			let class = label.attribute("class").unwrap();
+			let rule = format!(
+				".d .{class}{{font-size:9px;fill:{}}}",
+				palette(variant).text
+			);
+			assert!(svg.contains(&rule), "{rule}");
+		}
 	}
 
 	#[test]
@@ -2450,7 +2850,6 @@ mod tests {
 		assert_eq!(totals.parent(), date.parent());
 		const {
 			assert!(TOTALS_ROW - DATE_ROW >= TOTALS_STEP);
-			assert!(TOTALS_ROW < GROUND - CHART_HEIGHT - TOP_RADIUS);
 		}
 	}
 

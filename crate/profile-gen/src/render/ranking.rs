@@ -70,11 +70,19 @@ fn hold_visibility(grid: &mut [Vec<Cell>], top_n: usize, rest_frames: usize) {
 				.filter(|lane| wanted[*lane] && !shown[*lane] && settled(lane))
 				.collect();
 			incoming.sort_by_key(rank);
+			let present = |lane: &usize| grid[*lane][column].present;
+			let emptied: Vec<usize> = (0..grid.len())
+				.filter(|lane| shown[*lane] && !present(lane) && settled(lane))
+				.collect();
 			let mut outgoing: Vec<usize> = (0..grid.len())
-				.filter(|lane| shown[*lane] && !wanted[*lane] && settled(lane))
+				.filter(|lane| shown[*lane] && !wanted[*lane] && present(lane) && settled(lane))
 				.collect();
 			outgoing.sort_by_key(|lane| Reverse(rank(lane)));
 			let mut outgoing = outgoing.into_iter();
+			for lane in emptied {
+				shown[lane] = false;
+				changed_at[lane] = Some(column);
+			}
 			for lane in incoming {
 				if shown.iter().filter(|visible| **visible).count() >= top_n {
 					let Some(leaving) = outgoing.next() else {
@@ -496,5 +504,16 @@ mod tests {
 			.map(|(other, flapper)| other ^ flapper)
 			.collect();
 		assert!(either.iter().all(|exactly_one| *exactly_one));
+	}
+
+	#[test]
+	fn language_at_zero_leaves_without_a_newcomer() {
+		let lines: Vec<Vec<u64>> = (0..40_u64)
+			.map(|frame| vec![1_000 + frame, if frame < 20 { 500 } else { 0 }])
+			.collect();
+		let timeline = race_within(&lines, 2);
+		let leaving = visible(&timeline, 1);
+		assert_eq!(change_frames(&leaving), [20], "{leaving:?}");
+		assert!(visible(&timeline, 0).iter().all(|shown| *shown));
 	}
 }

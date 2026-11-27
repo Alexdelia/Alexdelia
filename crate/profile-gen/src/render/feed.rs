@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use super::clock::Clock;
 use super::feeder::Flight;
-use super::ranking::Cell;
+use super::format::whole_ms;
+use super::ranking::{Cell, cell_at};
 use super::schedule::{Shot, Throw};
 
 pub(super) struct Feed {
@@ -37,17 +38,17 @@ pub(super) fn feed_list(row_list: &[Vec<Cell>]) -> Vec<Feed> {
 }
 
 fn lane_feeds(lane: usize, cells: &[Cell]) -> Vec<Feed> {
-	let mut fed = 0;
+	let mut previous = 0;
 	let mut list = Vec::new();
 	for (frame, cell) in cells.iter().enumerate() {
-		if cell.visible && cell.lines > fed {
+		if cell.visible && cell.lines > previous {
 			list.push(Feed {
 				lane,
 				frame,
-				fed_before: fed,
+				fed_before: previous,
 			});
-			fed = cell.lines;
 		}
+		previous = cell.lines;
 	}
 	list
 }
@@ -88,22 +89,65 @@ pub(super) fn paired<'a>(
 		.collect()
 }
 
-pub(super) fn growth(lane: usize, cells: &[Cell], flight_list: &[Flight]) -> Vec<(u32, u64)> {
-	let mut landed: Vec<&Flight> = flight_list
+pub(super) fn bar_steps(
+	lane: usize,
+	cells: &[Cell],
+	flight_list: &[Flight],
+	clock: &Clock,
+) -> Vec<(u32, u64)> {
+	let lines = |frame: usize| cell_at(cells, frame).lines;
+	let landing_list: Vec<(u32, usize)> = flight_list
 		.iter()
 		.filter(|flight| flight.lane == lane)
+		.map(|flight| (flight.land_ms, flight.frame))
 		.collect();
-	landed.sort_by_key(|flight| flight.land_ms);
-	let mut fed = 0;
-	landed
+	let unfed_change_list = (0..cells.len()).filter(|frame| {
+		let dropped = lines(*frame) < frame.checked_sub(1).map_or(0, lines);
+		let shown = cell_at(cells, *frame).visible;
+		(dropped || shown) && landing_list.iter().all(|(_, fed)| fed != frame)
+	});
+	let mut event_list: Vec<(u32, bool, usize)> = landing_list
 		.iter()
-		.map(|flight| {
-			fed = cells
-				.get(flight.frame)
-				.map_or(fed, |cell| fed.max(cell.lines));
-			(flight.land_ms, fed)
-		})
-		.collect()
+		.map(|(ms, frame)| (*ms, false, *frame))
+		.chain(unfed_change_list.map(|frame| (frame_ms(clock, frame), true, frame)))
+		.collect();
+	event_list.sort_unstable();
+	let mut landed: Vec<usize> = Vec::new();
+	let mut step_list: Vec<(u32, u64)> = Vec::new();
+	for (ms, is_frame_change, frame) in event_list {
+		if !is_frame_change {
+			landed.push(frame);
+		}
+		let current = frame_at(ms, clock, cells.len());
+		let level = landed
+			.iter()
+			.filter(|fed| current.is_none_or(|current| **fed > current))
+			.map(|fed| lines(*fed))
+			.fold(current.map_or(0, lines), u64::max);
+		let shown_level = step_list.last().map_or(0, |(_, last)| *last);
+		let emits = if !is_frame_change {
+			true
+		} else if cell_at(cells, frame).visible {
+			level != shown_level
+		} else {
+			level < shown_level
+		};
+		if emits {
+			step_list.push((ms, level));
+		}
+	}
+	step_list
+}
+
+fn frame_ms(clock: &Clock, frame: usize) -> u32 {
+	u32::try_from(whole_ms(clock.ms(clock.lead + frame))).unwrap_or(u32::MAX)
+}
+
+fn frame_at(ms: u32, clock: &Clock, frames: usize) -> Option<usize> {
+	usize::try_from(ms / clock.tick_ms)
+		.unwrap_or(usize::MAX)
+		.checked_sub(clock.lead)
+		.map(|frame| frame.min(frames.saturating_sub(1)))
 }
 
 fn visible_runs(cells: &[Cell]) -> Vec<(usize, usize)> {
@@ -232,8 +276,21 @@ mod tests {
 		}
 	}
 
+	fn landing(frame: usize, land_ms: u32) -> Flight {
+		Flight {
+			lane: 0,
+			name: "Rust",
+			frame,
+			enter_ms: 0,
+			fire_ms: 0,
+			land_ms,
+			to_x: 0.0,
+			landing_y: 0.0,
+		}
+	}
+
 	#[test]
-	fn reentry_feeds_lines_grown_while_hidden() {
+	fn reentry_feeds_only_growth_over_the_previous_frame() {
 		let cells = [
 			cell(10, true),
 			cell(10, true),
@@ -241,13 +298,15 @@ mod tests {
 			cell(30, true),
 			cell(30, true),
 			cell(40, true),
+			cell(20, false),
+			cell(25, true),
 		];
 		let feeds = lane_feeds(3, &cells);
 		let frame_list: Vec<usize> = feeds.iter().map(|feed| feed.frame).collect();
-		assert_eq!(frame_list, [0, 3, 5]);
+		assert_eq!(frame_list, [0, 5, 7]);
 		assert!(feeds.iter().all(|feed| feed.lane == 3));
 		let fed_list: Vec<u64> = feeds.iter().map(|feed| feed.fed_before).collect();
-		assert_eq!(fed_list, [0, 10, 30]);
+		assert_eq!(fed_list, [0, 30, 20]);
 	}
 
 	#[test]
@@ -272,27 +331,108 @@ mod tests {
 	}
 
 	#[test]
-	fn growth_follows_landing_order_and_never_shrinks() {
-		let cells = [cell(4, true), cell(9, true), cell(12, true)];
-		let flight = |frame: usize, land_ms: u32| Flight {
-			lane: 0,
-			name: "Rust",
-			frame,
-			enter_ms: 0,
-			fire_ms: 0,
-			land_ms,
-			to_x: 0.0,
-			landing_y: 0.0,
-		};
+	fn bar_steps_drop_at_frame_time_without_flight() {
+		let clock = Clock::new(4, 300, 0);
+		let cells = [
+			cell(400, true),
+			cell(400, true),
+			cell(100, true),
+			cell(100, true),
+		];
 		let flight_list = [
-			flight(0, 300),
-			flight(2, 500),
-			flight(1, 600),
-			flight(7, 700),
+			landing(0, 1_500),
+			Flight {
+				lane: 1,
+				..landing(1, 1_700)
+			},
 		];
 		assert_eq!(
-			growth(0, &cells, &flight_list),
-			[(300, 4), (500, 12), (600, 12), (700, 12)]
+			bar_steps(0, &cells, &flight_list, &clock),
+			[(1_500, 400), (frame_ms(&clock, 2), 100)]
+		);
+	}
+
+	#[test]
+	fn regrowth_after_drop_is_fed() {
+		let clock = Clock::new(4, 300, 0);
+		let cells = [
+			cell(400, true),
+			cell(100, true),
+			cell(300, true),
+			cell(300, true),
+		];
+		let feeds = lane_feeds(0, &cells);
+		let fed: Vec<(usize, u64)> = feeds
+			.iter()
+			.map(|feed| (feed.frame, feed.fed_before))
+			.collect();
+		assert_eq!(fed, [(0, 0), (2, 100)]);
+		let regrow_ms = frame_ms(&clock, 2) - 40;
+		assert_eq!(
+			bar_steps(
+				0,
+				&cells,
+				&[landing(2, regrow_ms), landing(0, 1_500)],
+				&clock
+			),
+			[(1_500, 400), (frame_ms(&clock, 1), 100), (regrow_ms, 300)]
+		);
+		let early_ms = frame_ms(&clock, 1);
+		assert_eq!(
+			bar_steps(
+				0,
+				&cells,
+				&[landing(0, 1_500), landing(2, early_ms)],
+				&clock
+			),
+			[(1_500, 400), (early_ms, 300)]
+		);
+	}
+
+	#[test]
+	fn hidden_frames_never_raise_the_bar() {
+		let clock = Clock::new(4, 300, 0);
+		let cells = [
+			cell(10, true),
+			cell(50, false),
+			cell(40, false),
+			cell(60, true),
+		];
+		let land_ms = frame_ms(&clock, 2) + 30;
+		assert_eq!(
+			bar_steps(0, &cells, &[landing(0, 1_500), landing(3, land_ms)], &clock),
+			[(1_500, 10), (land_ms, 60)]
+		);
+		let shrunk = [
+			cell(100, true),
+			cell(150, false),
+			cell(40, false),
+			cell(60, true),
+		];
+		assert_eq!(
+			bar_steps(
+				0,
+				&shrunk,
+				&[landing(0, 1_500), landing(3, land_ms)],
+				&clock
+			),
+			[(1_500, 100), (frame_ms(&clock, 2), 40), (land_ms, 60)]
+		);
+	}
+
+	#[test]
+	fn growth_while_hidden_shows_on_reentry_without_flight() {
+		let clock = Clock::new(5, 400, 0);
+		let cells = [
+			cell(10, true),
+			cell(10, false),
+			cell(30, false),
+			cell(30, false),
+			cell(30, true),
+		];
+		assert_eq!(
+			bar_steps(0, &cells, &[landing(0, 1_500)], &clock),
+			[(1_500, 10), (frame_ms(&clock, 4), 30)]
 		);
 	}
 

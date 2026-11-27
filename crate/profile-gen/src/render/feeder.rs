@@ -48,6 +48,8 @@ const SHIMMER_MS: u32 = SHIMMER_STEP_MS * SHIMMER_STEPS;
 
 pub(super) const GRAVITY: f64 = 0.0024;
 const APEX_MARGIN: f64 = 10.0;
+const HIGHEST_APEX_Y: f64 = 2.0 * FLIGHT_RADIUS;
+pub(super) const ARC_HEADROOM: f64 = HIGHEST_APEX_Y + APEX_MARGIN + FLIGHT_RADIUS;
 const APEX_PER_PX: f64 = 0.03;
 const APEX_PER_LIFT: f64 = 0.55;
 const RESTING_Y: f64 = GROUND - FLIGHT_RADIUS;
@@ -87,7 +89,8 @@ pub(super) fn flight_ms(dx: f64, landing_y: f64) -> i64 {
 
 fn apex_y(dx: f64, landing_y: f64) -> f64 {
 	let lift = APEX_PER_LIFT * (RESTING_Y - landing_y.max(POUCH_Y)).max(0.0);
-	POUCH_Y.min(landing_y) - APEX_PER_PX.mul_add(dx.abs(), APEX_MARGIN) - lift
+	let ceiling = POUCH_Y.min(landing_y);
+	(ceiling - APEX_PER_PX.mul_add(dx.abs(), APEX_MARGIN) - lift).max(HIGHEST_APEX_Y.min(ceiling))
 }
 
 fn fall_ms(height: f64) -> f64 {
@@ -680,6 +683,12 @@ mod tests {
 				"{landing_y} {apex}"
 			);
 			previous = (apex, ms);
+		}
+		let peak_landing_y = ARC_HEADROOM - FLIGHT_RADIUS;
+		for dx in [56.0, 300.0, 812.0] {
+			let (apex, _) = measured(dx, peak_landing_y);
+			assert!(apex >= FLIGHT_RADIUS, "{dx} {apex}");
+			assert!(apex <= peak_landing_y - APEX_MARGIN + 0.5, "{dx} {apex}");
 		}
 		let (highest, longest) = measured(812.0, 94.0);
 		assert!(highest >= FLIGHT_RADIUS, "{highest}");
