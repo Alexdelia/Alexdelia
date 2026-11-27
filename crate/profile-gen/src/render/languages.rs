@@ -13,10 +13,11 @@ use super::ranking::{Cell, cell_at, grid, settle};
 use super::schedule::{Shot, schedule};
 use super::ticker::{Row, ticker};
 use super::tube::{TUBE_TOP, tube_capacity};
+use crate::history::Week;
 use crate::icons::icon_path;
 use crate::language::Language;
 use crate::theme::{FONT_STACK, Palette, Variant, palette};
-use crate::timeline::{Frame, LanguageSummary, Timeline};
+use crate::timeline::{Frame, LanguageSummary, Timeline, Trend};
 
 pub(super) const WIDTH: f64 = 880.0;
 const HEIGHT: f64 = 432.0;
@@ -38,13 +39,15 @@ const NARROW_EM: f64 = 0.46;
 const BROAD_EM: f64 = 0.82;
 const WIDE_EM: f64 = 1.0;
 const NAME_FONT_PX: f64 = 10.0;
+const SHARE_FONT_PX: f64 = 11.0;
+const MUTED_FONT_PX: f64 = 10.0;
 
 pub(super) const TOKEN_RADIUS: f64 = 10.0;
 const DARK_INK_THRESHOLD: u32 = 150_000;
 const GROUND_DRAW_MS: f64 = 600.0;
 const FADE_MS: f64 = 250.0;
-const LEGEND_DIP: f64 = 0.1;
-const DIP_BRIDGE_TICKS: usize = 4;
+const LEGEND_DIP: f64 = 0.6;
+const DIP_BRIDGE_TICKS: usize = 2;
 const CONTACT_MARGIN: f64 = 2.0;
 
 const TOKEN_ROW: f64 = GROUND + 24.0;
@@ -94,7 +97,11 @@ pub fn render_languages(timeline: &Timeline, variant: Variant, seconds_per_year:
 }
 
 fn name_width(name: &str) -> f64 {
-	name.chars().map(glyph_em).sum::<f64>() * NAME_FONT_PX
+	text_width(name, NAME_FONT_PX)
+}
+
+fn text_width(text: &str, font_px: f64) -> f64 {
+	text.chars().map(glyph_em).sum::<f64>() * font_px
 }
 
 const fn glyph_em(glyph: char) -> f64 {
@@ -264,7 +271,7 @@ impl<'a> Race<'a> {
 			flight.to_x = aim_x(flight, &lane.x, clock.tick_ms, layout.bar_width() / 2.0);
 		}
 		lanes.retain(|lane| lane.cells.iter().any(|cell| cell.visible));
-		let crossing_list = crossing_list(&lanes, &clock, layout.label_room());
+		let crossing_list = crossing_list(&lanes, &clock, &layout);
 		for (lane, crossing) in lanes.iter_mut().zip(crossing_list) {
 			lane.crossing = crossing;
 		}
@@ -283,7 +290,7 @@ impl<'a> Race<'a> {
 	}
 }
 
-fn crossing_list(lanes: &[Lane], clock: &Clock, reach: f64) -> Vec<Vec<(usize, usize)>> {
+fn crossing_list(lanes: &[Lane], clock: &Clock, layout: &Layout) -> Vec<Vec<(usize, usize)>> {
 	let shown_grid: Vec<Vec<bool>> = lanes
 		.iter()
 		.map(|lane| shown_ticks(&lane.shown, clock))
@@ -303,9 +310,20 @@ fn crossing_list(lanes: &[Lane], clock: &Clock, reach: f64) -> Vec<Vec<(usize, u
 			x: &lane.x,
 			shown,
 			ranked,
+			footprint: footprint(lane.name(), &LegendText::of(lane, clock), layout),
 		})
 		.collect();
-	close_runs(&track_list, reach, DIP_BRIDGE_TICKS)
+	close_runs(&track_list, DIP_BRIDGE_TICKS)
+}
+
+fn footprint(name: &str, legend: &LegendText, layout: &Layout) -> f64 {
+	[
+		2.0 * TOKEN_RADIUS,
+		name_width(name).min(layout.label_room()),
+		legend.widest(),
+	]
+	.into_iter()
+	.fold(0.0, f64::max)
 }
 
 fn flight(feed: &Feed, shot: &Shot, lane: &Lane, clock: &Clock) -> Flight {
@@ -564,7 +582,7 @@ fn column(lane: &Lane, race: &Race) -> String {
 	let width = race.layout.bar_width();
 	let x_list: Vec<String> = lane.x.iter().map(|x| num(*x, 1)).collect();
 	let name = escape(lane.name());
-	let trend = lane.summary.trend;
+	let legend_text = LegendText::of(lane, clock);
 	format!(
 		concat!(
 			"<g data-column=\"{name}\" transform=\"translate({x})\"{hidden}>{slide}{fade}",
@@ -595,17 +613,9 @@ fn column(lane: &Lane, race: &Race) -> String {
 		index = lane.index,
 		token_y = num(TOKEN_ROW, 1),
 		name_label = name_label(lane.name(), race.layout.label_room()),
-		legend = legend(lane, clock),
-		since = label(SINCE_ROW, "m", &lane.summary.since.year().to_string()),
-		trend = label(
-			TREND_ROW,
-			"m",
-			&format!(
-				"{} {}",
-				arrow(trend.direction()),
-				signed_compact(trend.change())
-			)
-		),
+		legend = legend(&legend_text, duration),
+		since = label(SINCE_ROW, "m", &legend_text.since),
+		trend = label(TREND_ROW, "m", &legend_text.trend()),
 	)
 }
 
@@ -650,10 +660,9 @@ fn shown_ticks(shown: &[Shown], clock: &Clock) -> Vec<bool> {
 
 fn dip_runs(crossing: &[(usize, usize)], last: usize) -> Vec<(usize, usize)> {
 	let mut run_list: Vec<(usize, usize)> = Vec::new();
-	for (start, end) in crossing.iter().filter(|(start, _)| *start < last) {
-		let ramp_in = start.saturating_sub(1);
+	for (start, end) in crossing.iter().filter(|(start, _)| start + 1 < last) {
 		match run_list.last_mut() {
-			Some(run) if ramp_in <= run.1 + 2 => run.1 = run.1.max(*end),
+			Some(run) if *start <= run.1 + DIP_BRIDGE_TICKS => run.1 = run.1.max(*end),
 			_ => run_list.push((*start, *end)),
 		}
 	}
@@ -668,11 +677,12 @@ fn dip(crossing: &[(usize, usize)], clock: &Clock) -> String {
 	}
 	let mut point_list: Vec<(usize, f64)> = vec![(0, 1.0)];
 	for (start, end) in run_list {
+		let low_end = end.max(start + 1).min(last - 1);
 		for point in [
-			(start.saturating_sub(1), 1.0),
-			(start, LEGEND_DIP),
-			((end + 1).min(last - 1), LEGEND_DIP),
-			((end + 2).min(last), 1.0),
+			(start, 1.0),
+			(start + 1, LEGEND_DIP),
+			(low_end, LEGEND_DIP),
+			(low_end + 1, 1.0),
 		] {
 			if point_list
 				.last()
@@ -773,18 +783,65 @@ fn label(y: f64, class: &str, content: &str) -> String {
 	)
 }
 
-fn legend(lane: &Lane, clock: &Clock) -> String {
-	let duration = clock.duration();
-	let cell_list: Vec<Cell> = clock
-		.state_ticks()
-		.into_iter()
-		.map(|tick| lane.at(tick, clock))
-		.collect();
-	let share = ticker(
-		cell_list
+struct LegendText {
+	share: Vec<String>,
+	lines: Vec<String>,
+	repos: Vec<String>,
+	since: String,
+	arrow: &'static str,
+	after_arrow: String,
+}
+
+impl LegendText {
+	fn of(lane: &Lane, clock: &Clock) -> Self {
+		let cell_list: Vec<Cell> = clock
+			.state_ticks()
+			.into_iter()
+			.map(|tick| lane.at(tick, clock))
+			.collect();
+		Self::new(&cell_list, lane.summary.since, lane.summary.trend)
+	}
+
+	fn new(cell_list: &[Cell], since: Week, trend: Trend) -> Self {
+		Self {
+			share: cell_list
+				.iter()
+				.map(|cell| percent(cell.share_bp))
+				.collect(),
+			lines: cell_list.iter().map(|cell| compact(cell.lines)).collect(),
+			repos: cell_list
+				.iter()
+				.map(|cell| cell.repos.to_string())
+				.collect(),
+			since: since.year().to_string(),
+			arrow: arrow(trend.direction()),
+			after_arrow: format!(" {}", signed_compact(trend.change())),
+		}
+	}
+
+	fn trend(&self) -> String {
+		format!("{}{}", self.arrow, self.after_arrow)
+	}
+
+	fn widest(&self) -> f64 {
+		let share = self
+			.share
 			.iter()
-			.map(|cell| percent(cell.share_bp))
-			.collect(),
+			.map(|text| text_width(text, SHARE_FONT_PX));
+		let muted = self
+			.lines
+			.iter()
+			.chain(&self.repos)
+			.chain([&self.since])
+			.map(|text| text_width(text, MUTED_FONT_PX));
+		let trend = WIDE_EM.mul_add(MUTED_FONT_PX, text_width(&self.after_arrow, MUTED_FONT_PX));
+		share.chain(muted).chain([trend]).fold(0.0, f64::max)
+	}
+}
+
+fn legend(text: &LegendText, duration: f64) -> String {
+	let share = ticker(
+		text.share.clone(),
 		Row {
 			clip: "cs",
 			class: "s",
@@ -794,7 +851,7 @@ fn legend(lane: &Lane, clock: &Clock) -> String {
 		duration,
 	);
 	let lines = ticker(
-		cell_list.iter().map(|cell| compact(cell.lines)).collect(),
+		text.lines.clone(),
 		Row {
 			clip: "cl",
 			class: "m",
@@ -804,10 +861,7 @@ fn legend(lane: &Lane, clock: &Clock) -> String {
 		duration,
 	);
 	let repos = ticker(
-		cell_list
-			.iter()
-			.map(|cell| cell.repos.to_string())
-			.collect(),
+		text.repos.clone(),
 		Row {
 			clip: "cr",
 			class: "m",
@@ -3028,25 +3082,30 @@ mod tests {
 	}
 
 	#[test]
-	fn dip_ramps_over_the_tick_before_and_after_a_run() {
-		let svg = dip_animation(&[(10, 14)]);
+	fn dip_ramps_from_the_first_close_tick_to_the_tick_after_the_last() {
+		let svg = dip_animation(&[(10, 14), (20, 20)]);
 		let document = Document::parse(&svg).unwrap();
-		assert!((dip_at(&document, 9) - 1.0).abs() < 1e-3);
-		assert!((dip_at(&document, 10) - LEGEND_DIP).abs() < 1e-3);
-		assert!((dip_at(&document, 15) - LEGEND_DIP).abs() < 1e-3);
-		assert!((dip_at(&document, 16) - 1.0).abs() < 1e-3);
+		assert!((dip_at(&document, 10) - 1.0).abs() < 1e-3);
+		assert!((dip_at(&document, 11) - LEGEND_DIP).abs() < 1e-3);
+		assert!((dip_at(&document, 14) - LEGEND_DIP).abs() < 1e-3);
+		assert!((dip_at(&document, 15) - 1.0).abs() < 1e-3);
+		assert!((dip_at(&document, 20) - 1.0).abs() < 1e-3);
+		assert!((dip_at(&document, 21) - LEGEND_DIP).abs() < 1e-3);
+		assert!((dip_at(&document, 22) - 1.0).abs() < 1e-3);
 	}
 
 	#[test]
 	fn dip_key_times_strictly_increase() {
 		let last = dip_clock().ticks() - 1;
 		assert_eq!(dip(&[(last, last)], &dip_clock()), "");
-		let crossing_cases: [&[(usize, usize)]; 6] = [
+		assert_eq!(dip(&[(last - 1, last)], &dip_clock()), "");
+		let crossing_cases: [&[(usize, usize)]; 7] = [
 			&[(0, 2)],
 			&[(1, 2)],
 			&[(5, 6), (7, 8), (10, 11), (13, 14), (17, 18)],
+			&[(5, 5), (7, 7), (9, 9)],
 			&[(20, last - 1)],
-			&[(20, 22), (last - 1, last)],
+			&[(20, 22), (last - 2, last)],
 			&[(20, 22), (last, last)],
 		];
 		for crossing in crossing_cases {
@@ -3056,8 +3115,138 @@ mod tests {
 			assert!((dip_at(&document, last) - 1.0).abs() < 1e-3, "{crossing:?}");
 		}
 		let svg = dip_animation(&[(0, 2)]);
-		let starts_low = Document::parse(&svg).unwrap();
-		assert!((dip_at(&starts_low, 0) - LEGEND_DIP).abs() < 1e-3);
+		let starts_at_once = Document::parse(&svg).unwrap();
+		assert!((dip_at(&starts_at_once, 0) - 1.0).abs() < 1e-3);
+		assert!((dip_at(&starts_at_once, 1) - LEGEND_DIP).abs() < 1e-3);
+	}
+
+	const PAIR_FOOTPRINT: f64 = 40.0;
+	const CLOSEST_CENTERS: f64 = 50.0;
+
+	fn pair_runs(left: (&[f64], f64), right: (&[f64], f64)) -> Vec<Vec<(usize, usize)>> {
+		let shown = vec![true; left.0.len()];
+		let track_list = [left, right].map(|(x, footprint)| Track {
+			x,
+			shown: &shown,
+			ranked: &shown,
+			footprint,
+		});
+		close_runs(&track_list, DIP_BRIDGE_TICKS)
+	}
+
+	#[test]
+	fn legend_dip_ends_the_tick_after_columns_separate() {
+		let mut mover = [0.0; 40];
+		for (tick, x) in mover.iter_mut().enumerate().skip(10) {
+			*x = (20.0 * float(tick - 9)).min(120.0);
+		}
+		let still = [60.0; 40];
+		let run_list = pair_runs((&mover, PAIR_FOOTPRINT), (&still, PAIR_FOOTPRINT));
+		assert_eq!(run_list[0], [(9, 14)]);
+		let svg = dip_animation(&run_list[0]);
+		let document = Document::parse(&svg).unwrap();
+		assert!((dip_at(&document, 14) - LEGEND_DIP).abs() < 1e-3);
+		assert!((dip_at(&document, 15) - 1.0).abs() < 1e-3);
+	}
+
+	fn jumper(away: Range<usize>) -> [f64; 40] {
+		let mut x = [0.0; 40];
+		for tick in away {
+			x[tick] = 100.0;
+		}
+		x
+	}
+
+	#[test]
+	fn close_crossings_two_ticks_apart_merge() {
+		let still = [50.0; 40];
+		let run_list = pair_runs((&jumper(6..8), PAIR_FOOTPRINT), (&still, PAIR_FOOTPRINT));
+		assert_eq!(run_list[0], [(5, 7)]);
+		let svg = dip_animation(&run_list[0]);
+		let document = Document::parse(&svg).unwrap();
+		assert!((dip_at(&document, 6) - LEGEND_DIP).abs() < 1e-3);
+	}
+
+	#[test]
+	fn crossings_three_ticks_apart_do_not() {
+		let still = [50.0; 40];
+		let run_list = pair_runs((&jumper(6..9), PAIR_FOOTPRINT), (&still, PAIR_FOOTPRINT));
+		assert_eq!(run_list[0], [(5, 5), (8, 8)]);
+		let svg = dip_animation(&run_list[0]);
+		let document = Document::parse(&svg).unwrap();
+		assert!((dip_at(&document, 7) - 1.0).abs() < 1e-3);
+	}
+
+	fn quartet() -> Timeline {
+		let mut usage = Usage::default();
+		spread(&mut usage, "TypeScript", 0..60, 40);
+		spread(&mut usage, "JavaScript", 0..60, 30);
+		spread(&mut usage, "Go", 0..60, 20);
+		spread(&mut usage, "C", 0..60, 10);
+		timeline(&usage, 4, 520)
+	}
+
+	fn approach_runs(left: &str, right: &str) -> Vec<Vec<(usize, usize)>> {
+		let data = quartet();
+		let race = Race::new(&data, PACE);
+		let footprint_of = |name: &str| {
+			let lane = race.lanes.iter().find(|lane| lane.name() == name).unwrap();
+			footprint(name, &LegendText::of(lane, &race.clock), &race.layout)
+		};
+		let approaching = [0.0, 25.0, CLOSEST_CENTERS, CLOSEST_CENTERS, 25.0, 0.0];
+		let still = [2.0 * CLOSEST_CENTERS; 6];
+		pair_runs(
+			(&approaching, footprint_of(left)),
+			(&still, footprint_of(right)),
+		)
+	}
+
+	fn widest_legend() -> LegendText {
+		let widest_cell = Cell {
+			lines: 999_999,
+			share_bp: 10_000,
+			repos: 999,
+			..Cell::default()
+		};
+		LegendText::new(
+			&[widest_cell],
+			week(0),
+			Trend {
+				now: 999_999,
+				year_ago: 0,
+			},
+		)
+	}
+
+	#[test]
+	fn trend_width_counts_the_arrow_as_a_wide_glyph() {
+		let legend = widest_legend();
+		assert_eq!(legend.trend(), "&#x2191; +999k");
+		let after_arrow = text_width(" +999k", MUTED_FONT_PX);
+		assert!((legend.widest() - WIDE_EM.mul_add(MUTED_FONT_PX, after_arrow)).abs() < 1e-9);
+	}
+
+	#[test]
+	fn sixteen_lanes_at_rest_never_dip() {
+		let layout = Layout::new(16);
+		let widest = footprint("Jupyter Notebook", &widest_legend(), &layout);
+		let left = [layout.center(0); 4];
+		let right = [layout.center(1); 4];
+		let run_list = pair_runs((&left, widest), (&right, widest));
+		assert_eq!(run_list, [vec![], vec![]], "{widest}");
+	}
+
+	#[test]
+	fn columns_sliding_past_without_touching_labels_do_not_dip() {
+		assert_eq!(approach_runs("C", "Go"), [vec![], vec![]]);
+	}
+
+	#[test]
+	fn wide_labels_touching_dip() {
+		assert_eq!(
+			approach_runs("TypeScript", "JavaScript"),
+			[vec![(1, 3)], vec![(1, 3)]]
+		);
 	}
 
 	#[test]
@@ -3224,13 +3413,37 @@ mod tests {
 		rest: usize,
 	}
 
+	fn legend_footprint(column: Node) -> f64 {
+		column
+			.descendants()
+			.filter(|node| node.has_tag_name("text"))
+			.map(|text| {
+				let font_px = if text.attribute("class") == Some("s") {
+					SHARE_FONT_PX
+				} else {
+					MUTED_FONT_PX
+				};
+				text.attribute("textLength").map_or_else(
+					|| text_width(&text_of(text), font_px),
+					|length| length.parse().unwrap(),
+				)
+			})
+			.fold(2.0 * TOKEN_RADIUS, f64::max)
+	}
+
+	const KEY_TIME_STEP: f64 = 1e-5;
+
 	fn assert_labels_never_overlap(data: &Timeline, pace: f64) -> Seen {
 		let slot = Race::new(data, pace).layout.slot;
-		let widest_label = slot - LABEL_PAD;
 		let svg = render_languages(data, Variant::Dark, pace);
 		let document = Document::parse(&svg).unwrap();
 		let tracks = Tracks::of(&document, slot);
 		let lanes = tracks.column_list.len();
+		let footprint_list: Vec<f64> = tracks
+			.column_list
+			.iter()
+			.map(|column| legend_footprint(*column))
+			.collect();
 		for column in &tracks.column_list {
 			let legend = assert_one_legend_group(*column);
 			if let Some(dip) = legend
@@ -3240,6 +3453,7 @@ mod tests {
 				assert_keys_increase(dip);
 			}
 		}
+		let key_time_slack = (1.0 - LEGEND_DIP) * KEY_TIME_STEP * float(tracks.ticks());
 		let mut seen = Seen::default();
 		for half_tick in 0..2 * (tracks.ticks() - 1) {
 			let at = float(half_tick) * tracks.tick_ms / 2.0;
@@ -3256,14 +3470,24 @@ mod tests {
 					if !tracks.close(&x_list, left, right) {
 						continue;
 					}
-					let apart = (x_list[left] - x_list[right]).abs() >= widest_label;
+					let touching = (x_list[left] - x_list[right]).abs()
+						< f64::midpoint(footprint_list[left], footprint_list[right]);
 					let lower = opacity_list[left].min(opacity_list[right]);
-					assert!(lower <= 0.15 || apart, "{at} {left} {right} {lower}");
+					let ceiling = if half_tick % 2 == 0 {
+						LEGEND_DIP
+					} else {
+						f64::midpoint(1.0, LEGEND_DIP)
+					};
+					assert!(
+						lower <= ceiling + key_time_slack || !touching,
+						"{at} {left} {right} {lower} {key_time_slack}"
+					);
 					let both_shown = opacity_at(tracks.column_list[left], at) > 0.0
 						&& opacity_at(tracks.column_list[right], at) > 0.0;
 					seen.crossing += usize::from(both_shown);
-					seen.spared += usize::from(both_shown && apart && lower > 0.99);
-					seen.dipped += usize::from(both_shown && !apart && lower <= 0.15);
+					seen.spared += usize::from(both_shown && !touching && lower > 0.99);
+					seen.dipped +=
+						usize::from(both_shown && touching && lower <= LEGEND_DIP + key_time_slack);
 				}
 			}
 		}
@@ -3293,6 +3517,31 @@ mod tests {
 			}
 		}
 		seen
+	}
+
+	#[test]
+	fn legend_dip_keeps_icon_and_text_readable() {
+		let mut dipped = 0;
+		for (data, pace) in paced().chain([(leap(), PACE), (large(), PACE)]) {
+			let svg = render_languages(&data, Variant::Dark, pace);
+			let document = Document::parse(&svg).unwrap();
+			let column_list = document
+				.descendants()
+				.filter(|node| node.attribute("data-column").is_some());
+			for column in column_list {
+				let legend = assert_one_legend_group(column);
+				let Some(dip) = legend
+					.children()
+					.find(|child| child.attribute("attributeName") == Some("opacity"))
+				else {
+					continue;
+				};
+				let lowest = number_list(dip, "values").into_iter().fold(1.0, f64::min);
+				assert!((lowest - 0.6).abs() < 1e-9, "{lowest}");
+				dipped += 1;
+			}
+		}
+		assert!(dipped > 0);
 	}
 
 	#[test]

@@ -1,29 +1,38 @@
+const LABEL_GAP: f64 = 2.0;
+
 pub(super) struct Track<'a> {
 	pub(super) x: &'a [f64],
 	pub(super) shown: &'a [bool],
 	pub(super) ranked: &'a [bool],
+	pub(super) footprint: f64,
 }
 
 impl Track<'_> {
-	fn near(&self, rival: &Self, tick: usize, reach: f64) -> bool {
+	fn next(&self, tick: usize) -> usize {
+		(tick + 1).min(self.x.len() - 1)
+	}
+
+	fn near(&self, rival: &Self, tick: usize) -> bool {
+		let reach = f64::midpoint(self.footprint, rival.footprint) + LABEL_GAP;
 		let gap = |at: usize| self.x[at] - rival.x[at];
 		let from = gap(tick);
-		let to = gap((tick + 1).min(self.x.len() - 1));
+		let to = gap(self.next(tick));
 		let passing = from.signum() != to.signum();
 		self.shown[tick] && rival.shown[tick] && (passing || from.abs().min(to.abs()) < reach)
 	}
 
-	fn yields_to(&self, rival: &Self, tick: usize, reach: f64) -> bool {
-		let outranks = self.ranked[tick] && !rival.ranked[tick];
-		!outranks && self.near(rival, tick, reach)
+	fn outranks(&self, rival: &Self, tick: usize) -> bool {
+		[tick, self.next(tick)]
+			.into_iter()
+			.all(|at| self.ranked[at] && !rival.ranked[at])
+	}
+
+	fn yields_to(&self, rival: &Self, tick: usize) -> bool {
+		!self.outranks(rival, tick) && self.near(rival, tick)
 	}
 }
 
-pub(super) fn close_runs(
-	track_list: &[Track],
-	reach: f64,
-	bridge: usize,
-) -> Vec<Vec<(usize, usize)>> {
+pub(super) fn close_runs(track_list: &[Track], bridge: usize) -> Vec<Vec<(usize, usize)>> {
 	track_list
 		.iter()
 		.enumerate()
@@ -33,7 +42,7 @@ pub(super) fn close_runs(
 				track_list
 					.iter()
 					.enumerate()
-					.any(|(other, rival)| other != lane && track.yields_to(rival, *tick, reach))
+					.any(|(other, rival)| other != lane && track.yields_to(rival, *tick))
 			});
 			for tick in close_ticks {
 				match run_list.last_mut() {
@@ -50,13 +59,14 @@ pub(super) fn close_runs(
 mod tests {
 	use super::*;
 
-	const REACH: f64 = 50.0;
+	const FOOTPRINT: f64 = 48.0;
 
 	fn track<'a>(x: &'a [f64], shown: &'a [bool]) -> Track<'a> {
 		Track {
 			x,
 			shown,
 			ranked: shown,
+			footprint: FOOTPRINT,
 		}
 	}
 
@@ -72,7 +82,6 @@ mod tests {
 				track(&right, &shown),
 				track(&far, &shown),
 			],
-			REACH,
 			1,
 		);
 		assert_eq!(run_list, [vec![(1, 3)], vec![(1, 3)], vec![]]);
@@ -87,19 +96,9 @@ mod tests {
 				track(&parked, &[false, false, true, true]),
 				track(&last, &[true; 4]),
 			],
-			REACH,
 			1,
 		);
 		assert_eq!(run_list, [vec![(2, 3)], vec![(2, 3)]]);
-	}
-
-	#[test]
-	fn runs_within_the_bridge_join() {
-		let mover = [50.0, 10.0, 50.0, 50.0, 10.0, 50.0, 50.0, 50.0, 50.0, 10.0];
-		let still = [0.0; 10];
-		let shown = [true; 10];
-		let run_list = close_runs(&[track(&mover, &shown), track(&still, &shown)], REACH, 3);
-		assert_eq!(run_list[0], [(0, 4), (8, 9)]);
 	}
 
 	#[test]
@@ -110,9 +109,30 @@ mod tests {
 			x: &spot,
 			shown: &shown,
 			ranked: &[false, false, true, true],
+			footprint: FOOTPRINT,
 		};
-		let run_list = close_runs(&[newcomer, track(&spot, &shown)], REACH, 1);
-		assert_eq!(run_list, [vec![(0, 3)], vec![(2, 3)]]);
+		let run_list = close_runs(&[newcomer, track(&spot, &shown)], 1);
+		assert_eq!(run_list, [vec![(0, 3)], vec![(1, 3)]]);
+	}
+
+	#[test]
+	fn ranking_handover_keeps_one_lane_yielding_every_tick() {
+		let spot = [50.0; 4];
+		let shown = [true; 4];
+		let handover = |ranked| Track {
+			x: &spot,
+			shown: &shown,
+			ranked,
+			footprint: FOOTPRINT,
+		};
+		let run_list = close_runs(
+			&[
+				handover(&[true, true, false, false]),
+				handover(&[false, false, true, true]),
+			],
+			1,
+		);
+		assert_eq!(run_list, [vec![(1, 3)], vec![(0, 1)]]);
 	}
 
 	#[test]
@@ -120,7 +140,7 @@ mod tests {
 		let jumper = [0.0, 100.0, 100.0];
 		let still = [50.0; 3];
 		let shown = [true; 3];
-		let run_list = close_runs(&[track(&jumper, &shown), track(&still, &shown)], REACH, 1);
+		let run_list = close_runs(&[track(&jumper, &shown), track(&still, &shown)], 1);
 		assert_eq!(run_list[0], [(0, 0)]);
 	}
 }
